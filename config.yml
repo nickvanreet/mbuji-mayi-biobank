@@ -1,0 +1,41 @@
+# Mbuji-Mayi Biobank Dashboard Configuration
+# Last updated: 2025-11-02
+
+paths:
+  biobank_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/01 - Biobanque"
+  extractions_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/02 - Extractions"
+  pcr_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/03 - Biologie Moléculaire/0302 - Résultats qPCR"
+  elisa_pe_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/04 - ELISA indirect PE/0402 - Résultats ELISA indirect PE"
+  elisa_vsg_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/05 - ELISA indirect VSG/0502 - Résultats ELISA indirect VSG"
+  ielisa_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/06 - iELISA/0602 - Résultats iELISA"
+
+map:
+  use_grid3_online: true
+  grid3_url: "https://services3.arcgis.com/BU6Aadhn6tbBEdyk/arcgis/rest/services/GRID3_COD_health_zones_v7_0/FeatureServer/0/query?where=1%3D1&outFields=province,zonesante&outSR=4326&f=geojson"
+  province_field_regex: "(?i)prov"
+  zone_field_regex: "(?i)zone|zs|zonesante"
+  fallback_shapefile: "testdata/cod_health_zones.gpkg"
+
+qc:
+  drs_target_ml: 2.0
+  drs_accept_min_ml: 1.5
+  drs_accept_max_ml: 2.5
+  max_transport_field_hs_days: 30
+  max_transport_hs_lsd_days: 30
+  max_transport_lsd_inrb_days: 90
+  max_doorlooptijd_days: 90
+
+ui:
+  theme_primary: "#2C3E50"
+  theme_success: "#27AE60"
+  theme_info: "#3498DB"
+  theme_warning: "#F39C12"
+  theme_danger: "#E74C3C"
+  cache_minutes: 10
+  default_date_range_days: 180
+
+app:
+  title: "Mbuji-Mayi Biobank Dashboard"
+  version: "2.0.0"
+  institution: "Institute of Tropical Medicine, Antwerp"
+  last_updated: "2025-11-02"
