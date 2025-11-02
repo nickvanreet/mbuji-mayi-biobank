@@ -1,0 +1,35 @@
+# R files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Data files (don't commit sensitive data)
+data/*.xlsx
+data/*.csv
+testdata/*.xlsx
+testdata/*.csv
+
+# Logs
+logs/*.log
+
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/staging/
+
+# Deployment
+rsconnect/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*~
+
