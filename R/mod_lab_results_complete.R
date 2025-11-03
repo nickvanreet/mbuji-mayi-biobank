@@ -912,233 +912,363 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         )
     }, striped = TRUE, hover = TRUE)
     
-    # === CONTROLS QC (NEW SECTION) ===
-    
-    # Extract controls from lab data
+# === CONTROLS QC (IMPROVED VERSION) ===
+
+# Extract controls from lab data using centralized function
 controls_data <- shiny::reactive({
-        lab <- lab_data_raw()
-        cfg <- config()
-        
-        if (is.null(lab)) {
-          return(list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble()))
-        }
-        
-        # Call the centralized extraction function
-        extract_all_controls(lab, cfg)
-      })    
-    # Filter controls
-# In controls_filtered reactive:
-      controls_filtered <- shiny::reactive({
-          ctrl <- controls_data()  # This is now a list!
-      
-      # Combine all controls into one dataframe for filtering
-      all_controls <- dplyr::bind_rows(
-        if (nrow(ctrl$pcr) > 0) ctrl$pcr %>% mutate(assay = "PCR") else NULL,
-        if (nrow(ctrl$elisa) > 0) ctrl$elisa else NULL,
-        if (nrow(ctrl$ielisa) > 0) ctrl$ielisa %>% mutate(assay = "iELISA") else NULL
-      )
-      
-      if (is.null(controls) || !nrow(controls)) {
-        return(tibble::tibble())
-      }
-      
-      tryCatch({
-        if (!identical(input$qc_assay, "All")) {
-          controls <- controls %>% dplyr::filter(assay == input$qc_assay)
-        }
-        
-        if (!identical(input$qc_control, "All")) {
-          controls <- controls %>% dplyr::filter(control_type == input$qc_control)
-        }
-        
-        controls
-      }, error = function(e) {
-        warning("Failed to filter controls: ", e$message)
-        tibble::tibble()
-      })
-    })
+  lab <- lab_data_raw()
+  cfg <- config()
+  
+  if (is.null(lab)) {
+    message("No lab data for controls extraction")
+    return(list(
+      pcr = tibble::tibble(), 
+      elisa = tibble::tibble(), 
+      ielisa = tibble::tibble()
+    ))
+  }
+  
+  # Use the extract_all_controls function from helpers_lab_merge.R
+  tryCatch({
+    message("Calling extract_all_controls...")
     
-    # QC bounds
-    qc_bounds <- shiny::reactive({
-      tryCatch({
-        calculate_qc_bounds(controls_data())
-      }, error = function(e) {
-        warning("Failed to calculate QC bounds: ", e$message)
-        tibble::tibble()
-      })
-    })
+    # Ensure helpers are loaded
+    if (!exists("extract_all_controls")) {
+      source("R/helpers_lab_merge.R", local = TRUE)
+    }
     
-    # Controls summary table
-    output$qc_controls_summary <- DT::renderDT({
-      controls <- controls_data()
-      
-      if (is.null(controls) || (nrow(controls$pcr) == 0 && nrow(controls$elisa) == 0 && nrow(controls$ielisa) == 0)) {
-        return(DT::datatable(tibble::tibble(Message = "No control data available")))
-      }
-      
-      tryCatch({
-        # PCR summary
-        pcr_summary <- if (nrow(controls$pcr) > 0) {
-          qc_pcr_controls_summary(controls$pcr, cp_max_cq = 35)
-        } else {
-          tibble::tibble()
-        }
-        
-        # ELISA summary
-        elisa_summary <- if (nrow(controls$elisa) > 0) {
-          qc_elisa_controls(controls$elisa) %>%
-            dplyr::group_by(assay_label, control) %>%
-            dplyr::summarise(
-              n = dplyr::n(),
-              mean_pp = mean(pp_percent, na.rm = TRUE),
-              sd_pp = sd(pp_percent, na.rm = TRUE),
-              passes = sum(pass, na.rm = TRUE),
-              .groups = "drop"
-            ) %>%
-            dplyr::mutate(
-              assay = assay_label,
-              control_type = control
-            ) %>%
-            dplyr::select(assay, control_type, n, mean_pp, sd_pp, passes)
-        } else {
-          tibble::tibble()
-        }
-        
-        # iELISA summary  
-        ielisa_summary <- if (nrow(controls$ielisa) > 0) {
-          qc_ielisa_controls(controls$ielisa) %>%
-            dplyr::transmute(
-              assay = "iELISA",
-              control_type = "Summary",
-              n = dplyr::n(),
-              mean_PI_13 = mean(iL13_PI_CP, na.rm = TRUE),
-              mean_PI_15 = mean(iL15_PI_CP, na.rm = TRUE),
-              passes = sum(pass_overall, na.rm = TRUE)
-            )
-        } else {
-          tibble::tibble()
-        }
-        
-        # Combine
-        if (nrow(pcr_summary) > 0) {
-          DT::datatable(
-            pcr_summary,
-            options = list(pageLength = 20),
-            rownames = FALSE
-          )
-        } else if (nrow(elisa_summary) > 0) {
-          DT::datatable(
-            elisa_summary,
-            options = list(pageLength = 20),
-            rownames = FALSE
-          ) %>%
-            DT::formatRound(columns = c("mean_pp", "sd_pp"), digits = 1)
-        } else if (nrow(ielisa_summary) > 0) {
-          DT::datatable(
-            ielisa_summary,
-            options = list(pageLength = 20),
-            rownames = FALSE
-          ) %>%
-            DT::formatRound(columns = c("mean_PI_13", "mean_PI_15"), digits = 1)
-        } else {
-          DT::datatable(tibble::tibble(Message = "No control summaries available"))
-        }
-        
-      }, error = function(e) {
-        DT::datatable(tibble::tibble(Error = paste("Failed to summarize:", e$message)))
-      })
-    })
+    controls <- extract_all_controls(lab, cfg)
     
-    # Levey-Jennings plot
-    output$qc_lj_plot <- shiny::renderPlot({
-      controls <- controls_data()
-      
-      if (is.null(controls)) {
-        plot.new()
-        text(0.5, 0.5, "No control data available", cex = 1.2, col = "gray50")
-        return()
-      }
-      
-      tryCatch({
-        # Determine which plot to show based on filter
-        if (input$qc_assay %in% c("All", "PCR") && nrow(controls$pcr) > 0) {
-          plot_pcr_controls(controls$pcr, cp_max_cq = 35)
-        } else if (grepl("ELISA", input$qc_assay) && nrow(controls$elisa) > 0) {
-          elisa_qc <- qc_elisa_controls(controls$elisa)
-          if (input$qc_assay != "All") {
-            elisa_qc <- elisa_qc %>% dplyr::filter(assay_label == input$qc_assay)
-          }
-          if (input$qc_control != "All") {
-            elisa_qc <- elisa_qc %>% dplyr::filter(control == input$qc_control)
-          }
-          plot_elisa_controls(elisa_qc)
-        } else if (input$qc_assay == "iELISA" && nrow(controls$ielisa) > 0) {
-          ielisa_qc <- qc_ielisa_controls(controls$ielisa, min_pi = 60)
-          plot_ielisa_controls(ielisa_qc, min_pi = 60)
-        } else {
-          plot.new()
-          text(0.5, 0.5, "No data for selected filters", cex = 1.2, col = "gray50")
-        }
-      }, error = function(e) {
-        plot.new()
-        text(0.5, 0.5, paste("Error:", e$message), cex = 1, col = "red")
-      })
-    })
+    message("Controls extracted:")
+    message("  PCR: ", nrow(controls$pcr), " rows")
+    message("  ELISA: ", nrow(controls$elisa), " rows")
+    message("  iELISA: ", nrow(controls$ielisa), " rows")
     
-    # Raw controls data
-    output$qc_controls_raw <- DT::renderDT({
-      controls <- controls_data()
+    controls
+    
+  }, error = function(e) {
+    warning("Failed to extract controls: ", e$message)
+    shiny::showNotification(
+      paste("Controls extraction failed:", e$message),
+      type = "error",
+      duration = 10
+    )
+    list(
+      pcr = tibble::tibble(), 
+      elisa = tibble::tibble(), 
+      ielisa = tibble::tibble()
+    )
+  })
+})
+
+# Filter controls based on user selection
+controls_filtered <- shiny::reactive({
+  ctrl <- controls_data()
+  
+  # Combine all controls into one dataframe for filtering
+  all_controls <- tryCatch({
+    dplyr::bind_rows(
+      if (nrow(ctrl$pcr) > 0) {
+        ctrl$pcr %>% dplyr::mutate(assay = "PCR", control_type = as.character(control))
+      } else NULL,
       
-      if (is.null(controls)) {
-        return(DT::datatable(tibble::tibble(Message = "No control data available")))
-      }
-      
-      tryCatch({
-        # Combine all control data for display
-        all_controls <- dplyr::bind_rows(
-          if (nrow(controls$pcr) > 0) {
-            controls$pcr %>% dplyr::mutate(assay = "PCR")
-          } else NULL,
-          if (nrow(controls$elisa) > 0) {
-            controls$elisa %>% dplyr::select(
-              file, assay = assay_label, plate, 
-              control_type = control, d_od, pp_percent
-            ) %>%
-              dplyr::mutate(assay = as.character(assay))
-          } else NULL
+      if (nrow(ctrl$elisa) > 0) {
+        ctrl$elisa %>% dplyr::mutate(
+          assay = assay_label,
+          control_type = control
         )
-        
-        if (is.null(all_controls) || !nrow(all_controls)) {
-          return(DT::datatable(tibble::tibble(Message = "No control data to display")))
-        }
-        
-        # Apply filters
-        if (input$qc_assay != "All") {
-          all_controls <- all_controls %>% 
-            dplyr::filter(grepl(input$qc_assay, assay, ignore.case = TRUE))
-        }
-        
-        if (input$qc_control != "All") {
-          all_controls <- all_controls %>%
-            dplyr::filter(control_type == input$qc_control | control == input$qc_control)
-        }
-        
-        available_cols <- names(all_controls)
-        numeric_cols <- available_cols[available_cols %in% c("d_od", "pp_percent", "cq", 
-                                                               "Cq_177T", "Cq_18S2", "Cq_RNAseP", 
-                                                               "min_Cq_tryp")]
-        
-        DT::datatable(
-          all_controls,
-          options = list(pageLength = 25, scrollX = TRUE),
-          filter = "top",
-          rownames = FALSE
+      } else NULL,
+      
+      if (nrow(ctrl$ielisa) > 0) {
+        ctrl$ielisa %>% dplyr::mutate(
+          assay = "iELISA",
+          control_type = "Summary"  # iELISA doesn't have individual controls
+        )
+      } else NULL
+    )
+  }, error = function(e) {
+    warning("Failed to combine controls: ", e$message)
+    tibble::tibble()
+  })
+  
+  if (is.null(all_controls) || !nrow(all_controls)) {
+    return(tibble::tibble())
+  }
+  
+  # Apply filters
+  if (!identical(input$qc_assay, "All")) {
+    all_controls <- all_controls %>% 
+      dplyr::filter(grepl(input$qc_assay, assay, ignore.case = TRUE))
+  }
+  
+  if (!identical(input$qc_control, "All")) {
+    all_controls <- all_controls %>%
+      dplyr::filter(control_type == input$qc_control)
+  }
+  
+  all_controls
+})
+
+# Controls summary table
+output$qc_controls_summary <- DT::renderDT({
+  ctrl <- controls_data()
+  
+  # Check if any controls exist
+  has_pcr <- nrow(ctrl$pcr) > 0
+  has_elisa <- nrow(ctrl$elisa) > 0
+  has_ielisa <- nrow(ctrl$ielisa) > 0
+  
+  if (!has_pcr && !has_elisa && !has_ielisa) {
+    return(DT::datatable(
+      tibble::tibble(Message = "No control data available. Load lab results first."),
+      options = list(dom = 't'),
+      rownames = FALSE
+    ))
+  }
+  
+  tryCatch({
+    summaries <- list()
+    
+    # PCR summary
+    if (has_pcr) {
+      pcr_summary <- qc_pcr_controls_summary(ctrl$pcr, cp_max_cq = 35) %>%
+        dplyr::transmute(
+          Assay = "PCR",
+          Run = file,
+          Date = run_date,
+          Control = as.character(control),
+          N = n_rows,
+          `Mean Cq` = round(minCq_mean, 2),
+          Flag = flag
+        )
+      summaries <- c(summaries, list(pcr_summary))
+    }
+    
+    # ELISA summary
+    if (has_elisa) {
+      elisa_summary <- qc_elisa_controls(ctrl$elisa) %>%
+        dplyr::group_by(assay_label, control, run_date) %>%
+        dplyr::summarise(
+          N = dplyr::n(),
+          `Mean PP%` = round(mean(pp_percent, na.rm = TRUE), 1),
+          Pass = sum(pass, na.rm = TRUE),
+          .groups = "drop"
         ) %>%
-          {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 3) else .}
-      }, error = function(e) {
-        DT::datatable(tibble::tibble(Error = paste("Failed to display controls:", e$message)))
-      })
+        dplyr::transmute(
+          Assay = assay_label,
+          Run = as.character(run_date),
+          Date = run_date,
+          Control = control,
+          N = N,
+          `Mean PP%` = `Mean PP%`,
+          Flag = ifelse(Pass == N, "OK", "FAIL")
+        )
+      summaries <- c(summaries, list(elisa_summary))
+    }
+    
+    # iELISA summary
+    if (has_ielisa) {
+      ielisa_summary <- qc_ielisa_controls(ctrl$ielisa, min_pi = 60) %>%
+        dplyr::transmute(
+          Assay = "iELISA",
+          Run = file,
+          Date = run_date,
+          Control = "CP Summary",
+          N = 2,  # Two antigens
+          `PI L1.3` = round(iL13_PI_CP, 1),
+          `PI L1.5` = round(iL15_PI_CP, 1),
+          Flag = ifelse(pass_overall, "OK", "FAIL")
+        )
+      summaries <- c(summaries, list(ielisa_summary))
+    }
+    
+    # Combine all summaries
+    combined <- dplyr::bind_rows(summaries)
+    
+    if (!nrow(combined)) {
+      return(DT::datatable(
+        tibble::tibble(Message = "No control summaries available"),
+        options = list(dom = 't'),
+        rownames = FALSE
+      ))
+    }
+    
+    DT::datatable(
+      combined,
+      options = list(
+        pageLength = 25,
+        scrollX = TRUE,
+        order = list(list(3, 'desc'))  # Sort by date descending
+      ),
+      rownames = FALSE
+    ) %>%
+      DT::formatStyle(
+        'Flag',
+        backgroundColor = DT::styleEqual(
+          c('OK', 'FAIL', 'CP_NOT_DETECTED', 'CP_CQ_TOO_HIGH', 'CN_CONTAMINATION'),
+          c('#d4edda', '#f8d7da', '#f8d7da', '#fff3cd', '#f8d7da')
+        )
+      )
+    
+  }, error = function(e) {
+    DT::datatable(
+      tibble::tibble(Error = paste("Failed to summarize:", e$message)),
+      options = list(dom = 't'),
+      rownames = FALSE
+    )
+  })
+})
+
+# Levey-Jennings plot (IMPROVED WITH FACETING)
+output$qc_lj_plot <- shiny::renderPlot({
+  ctrl <- controls_data()
+  
+  # Check what data we have
+  has_pcr <- !is.null(ctrl$pcr) && nrow(ctrl$pcr) > 0
+  has_elisa <- !is.null(ctrl$elisa) && nrow(ctrl$elisa) > 0
+  has_ielisa <- !is.null(ctrl$ielisa) && nrow(ctrl$ielisa) > 0
+  
+  if (!has_pcr && !has_elisa && !has_ielisa) {
+    plot.new()
+    text(0.5, 0.5, "No control data available\nLoad lab results first", 
+         cex = 1.2, col = "gray50")
+    return()
+  }
+  
+  tryCatch({
+    # Determine which plot to show based on filter
+    assay_filter <- input$qc_assay
+    
+    if (assay_filter %in% c("All", "PCR") && has_pcr) {
+      # PCR plot with multi-marker faceting
+      plot_pcr_controls(ctrl$pcr, cp_max_cq = 35)
+      
+    } else if (grepl("ELISA", assay_filter) && has_elisa) {
+      # ELISA plot
+      elisa_qc <- qc_elisa_controls(ctrl$elisa)
+      
+      # Filter by specific assay if not "All"
+      if (assay_filter != "All") {
+        elisa_qc <- elisa_qc %>% 
+          dplyr::filter(assay_label == assay_filter)
+      }
+      
+      # Filter by control type if selected
+      if (input$qc_control != "All") {
+        elisa_qc <- elisa_qc %>% 
+          dplyr::filter(control == input$qc_control)
+      }
+      
+      plot_elisa_controls(elisa_qc)
+      
+    } else if (assay_filter == "iELISA" && has_ielisa) {
+      # iELISA plot (both antigens)
+      ielisa_qc <- qc_ielisa_controls(ctrl$ielisa, min_pi = 60)
+      plot_ielisa_controls(ielisa_qc, min_pi = 60)
+      
+    } else {
+      # No matching data for selected filters
+      plot.new()
+      text(0.5, 0.5, 
+           sprintf("No %s control data available\nTry selecting a different assay", 
+                   assay_filter),
+           cex = 1, col = "gray50")
+    }
+    
+  }, error = function(e) {
+    plot.new()
+    text(0.5, 0.5, paste("Error creating plot:\n", e$message), 
+         cex = 1, col = "red")
+  })
+}, height = 600)  # Taller for faceted plots
+
+# Raw controls data table
+output$qc_controls_raw <- DT::renderDT({
+  ctrl_filtered <- controls_filtered()
+  
+  if (is.null(ctrl_filtered) || !nrow(ctrl_filtered)) {
+    return(DT::datatable(
+      tibble::tibble(Message = "No control data matches current filters"),
+      options = list(dom = 't'),
+      rownames = FALSE
+    ))
+  }
+  
+  tryCatch({
+    # Select relevant columns based on assay
+    display_df <- ctrl_filtered %>%
+      dplyr::select(
+        dplyr::any_of(c(
+          "assay", "file", "run_date", "run_id", "control_type",
+          # PCR
+          "lab_id", "Cq_177T", "Cq_18S2", "Cq_RNAseP", "min_Cq_tryp",
+          # ELISA
+          "plate", "d_od", "pp_percent", "pass",
+          # iELISA
+          "iL13_neg_mean", "iL13_pos_mean", "iL13_PI_CP",
+          "iL15_neg_mean", "iL15_pos_mean", "iL15_PI_CP",
+          "pass_overall"
+        ))
+      )
+    
+    # Identify numeric columns for rounding
+    numeric_cols <- names(display_df)[sapply(display_df, is.numeric)]
+    numeric_cols <- setdiff(numeric_cols, c("plate", "run_id"))
+    
+    DT::datatable(
+      display_df,
+      options = list(
+        pageLength = 25,
+        scrollX = TRUE,
+        order = list(list(2, 'desc'))  # Sort by date/file
+      ),
+      filter = "top",
+      rownames = FALSE
+    ) %>%
+      {if (length(numeric_cols) > 0) {
+        DT::formatRound(., columns = numeric_cols, digits = 2)
+      } else .}
+    
+  }, error = function(e) {
+    DT::datatable(
+      tibble::tibble(Error = paste("Failed to display controls:", e$message)),
+      options = list(dom = 't'),
+      rownames = FALSE
+    )
+  })
+})
+
+# Download handler for controls
+output$dl_controls <- shiny::downloadHandler(
+  filename = function() {
+    paste0("controls_qc_", format(Sys.Date(), "%Y%m%d"), ".csv")
+  },
+  content = function(file) {
+    ctrl <- controls_data()
+    
+    # Combine all controls
+    all_ctrls <- tryCatch({
+      dplyr::bind_rows(
+        if (nrow(ctrl$pcr) > 0) {
+          ctrl$pcr %>% dplyr::mutate(assay = "PCR")
+        } else NULL,
+        
+        if (nrow(ctrl$elisa) > 0) {
+          ctrl$elisa
+        } else NULL,
+        
+        if (nrow(ctrl$ielisa) > 0) {
+          ctrl$ielisa %>% dplyr::mutate(assay = "iELISA")
+        } else NULL
+      )
+    }, error = function(e) {
+      tibble::tibble(Error = paste("Export failed:", e$message))
     })
+    
+    readr::write_csv(all_ctrls, file)
+  }
+)
+
     
     # === DOWNLOADS ===
     
