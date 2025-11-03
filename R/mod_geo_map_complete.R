@@ -100,140 +100,67 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined = NULL, config) 
     })
     
     # Load shapefile/geopackage
-    shiny::observeEvent(input$map_load, {
-      shiny::withProgress(message = 'Loading map data...', value = 0, {
-        
-        shp <- NULL
-        error_msg <- NULL
-        
-        # Try online GRID3 first if checked
-        if (input$map_use_online) {
-          shiny::incProgress(0.3, detail = "Trying GRID3 online...")
-          cfg <- config()
-          if (!is.null(cfg) && "map" %in% names(cfg)) {
-            shp <- tryCatch({
-              url <- cfg$map$grid3_url
-              message("Attempting to load from: ", url)
-              sf_data <- sf::read_sf(url, quiet = TRUE)
-              
-              # Flatten list columns
-              for (col in names(sf_data)) {
-                if (is.list(sf_data[[col]]) && col != attr(sf_data, "sf_column")) {
-                  sf_data[[col]] <- vapply(sf_data[[col]], 
-                                           function(x) paste(as.character(x), collapse = "; "), 
-                                           "")
-                }
-              }
-              
-              # Make valid
-              sf_data <- sf::st_make_valid(sf_data)
-              map_status("✓ Loaded from GRID3 online")
-              sf_data
-            }, error = function(e) {
-              error_msg <<- paste("GRID3 failed:", e$message)
-              NULL
-            })
-          }
-        }
-        
-        # Try uploaded file
-        if (is.null(shp) && !is.null(input$map_upload)) {
-          shiny::incProgress(0.3, detail = "Reading uploaded file...")
-          shp <- tryCatch({
-            path <- input$map_upload$datapath
-            message("Attempting to load uploaded file: ", path)
-            sf_data <- sf::read_sf(path, quiet = TRUE)
-            sf_data <- sf::st_make_valid(sf_data)
-            map_status(paste("✓ Loaded from uploaded file:", 
-                             input$map_upload$name))
-            sf_data
-          }, error = function(e) {
-            error_msg <<- paste("Upload failed:", e$message)
-            NULL
-          })
-        }
-        
-        # Try local .gpkg path
-        if (is.null(shp) && !is.null(input$local_gpkg_path) && 
-            nzchar(trimws(input$local_gpkg_path))) {
-          shiny::incProgress(0.3, detail = "Reading local file...")
-          local_path <- safe_path(trimws(input$local_gpkg_path))
-          
-          shp <- tryCatch({
-            message("Attempting to load local file: ", local_path)
-            
-            if (!file.exists(local_path)) {
-              # Try relative to working directory
-              local_path <- file.path(getwd(), trimws(input$local_gpkg_path))
-              message("Trying relative path: ", local_path)
-            }
-            
-            if (file.exists(local_path)) {
-              sf_data <- sf::read_sf(local_path, quiet = TRUE)
-              sf_data <- sf::st_make_valid(sf_data)
-              map_status(paste("✓ Loaded from local file:", 
-                               basename(local_path)))
-              sf_data
-            } else {
-              error_msg <<- paste("File not found:", local_path)
-              NULL
-            }
-          }, error = function(e) {
-            error_msg <<- paste("Local file failed:", e$message)
-            NULL
-          })
-        }
-        
-        # Try config fallback
-        if (is.null(shp)) {
-          shiny::incProgress(0.3, detail = "Trying config fallback...")
-          cfg <- config()
-          if (!is.null(cfg) && "map" %in% names(cfg) && 
-              !is.null(cfg$map$fallback_shapefile)) {
-            fallback_path <- safe_path(cfg$map$fallback_shapefile)
-            
-            shp <- tryCatch({
-              message("Attempting fallback: ", fallback_path)
-              
-              if (!file.exists(fallback_path)) {
-                fallback_path <- file.path(getwd(), cfg$map$fallback_shapefile)
-                message("Trying relative fallback: ", fallback_path)
-              }
-              
-              if (file.exists(fallback_path)) {
-                sf_data <- sf::read_sf(fallback_path, quiet = TRUE)
-                sf_data <- sf::st_make_valid(sf_data)
-                map_status(paste("✓ Loaded from config fallback:", 
-                                 basename(fallback_path)))
-                sf_data
-              } else {
-                error_msg <<- paste("Fallback not found:", fallback_path)
-                NULL
-              }
-            }, error = function(e) {
-              error_msg <<- paste("Fallback failed:", e$message)
-              NULL
-            })
-          }
-        }
-        
-        # Final status
-        if (is.null(shp)) {
-          map_status(paste("⚠️ Failed to load map data.", error_msg))
-          shiny::showNotification(
-            paste("Failed to load map data:", error_msg),
-            type = "error",
-            duration = 10
-          )
-        } else {
-          shapefile_data(shp)
-          shiny::showNotification(
-            paste("Map data loaded successfully:", nrow(shp), "features"),
-            type = "message"
-          )
-        }
+# In mod_geo_map_complete.R, simplify the load logic:
+
+shiny::observeEvent(input$map_load, {
+  shiny::withProgress(message = 'Loading map data...', value = 0, {
+    
+    shp <- NULL
+    error_msg <- NULL
+    
+    # REMOVE: Online GRID3 attempt
+    # Just try uploaded file or local file
+    
+    # Try uploaded file
+    if (!is.null(input$map_upload)) {
+      shiny::incProgress(0.5, detail = "Reading uploaded file...")
+      shp <- tryCatch({
+        path <- input$map_upload$datapath
+        sf_data <- sf::read_sf(path, quiet = TRUE)
+        sf_data <- sf::st_make_valid(sf_data)
+        map_status(paste("✓ Loaded:", input$map_upload$name))
+        sf_data
+      }, error = function(e) {
+        error_msg <<- paste("Upload failed:", e$message)
+        NULL
       })
-    })
+    }
+    
+    # Try local path
+    if (is.null(shp) && !is.null(input$local_gpkg_path) && 
+        nzchar(trimws(input$local_gpkg_path))) {
+      shiny::incProgress(0.5, detail = "Reading local file...")
+      local_path <- safe_path(trimws(input$local_gpkg_path))
+      
+      shp <- tryCatch({
+        if (file.exists(local_path)) {
+          sf_data <- sf::read_sf(local_path, quiet = TRUE)
+          sf_data <- sf::st_make_valid(sf_data)
+          map_status(paste("✓ Loaded:", basename(local_path)))
+          sf_data
+        } else {
+          error_msg <<- paste("File not found:", local_path)
+          NULL
+        }
+      }, error = function(e) {
+        error_msg <<- paste("Local file failed:", e$message)
+        NULL
+      })
+    }
+    
+    # Final status
+    if (is.null(shp)) {
+      map_status(paste("⚠️ Failed to load map data.", error_msg))
+      shiny::showNotification(error_msg, type = "error", duration = 10)
+    } else {
+      shapefile_data(shp)
+      shiny::showNotification(
+        sprintf("Map loaded: %s features", scales::comma(nrow(shp))),
+        type = "message"
+      )
+    }
+  })
+})
     
     # Output map status
     output$map_status <- shiny::renderText({
