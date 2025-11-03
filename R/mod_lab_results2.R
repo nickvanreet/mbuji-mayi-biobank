@@ -4,34 +4,86 @@
 
 mod_lab_results2_ui <- function(id) {
   ns <- NS(id)
-  tagList(
-    fluidRow(
-      column(
-        width = 4,
-        textInput(ns("barcode_search"), "Search Barcode or LabID", placeholder = "e.g. 2401006, 105, ..."),
+
+  bslib::layout_columns(
+    col_widths = c(4, 8),
+
+    bslib::card(
+      bslib::card_header("Lab Results Controls"),
+
+      bslib::layout_columns(
+        col_widths = c(8, 4),
+        textInput(ns("barcode_search"), "Search barcode / Lab ID", placeholder = "e.g. 2401006"),
+        actionButton(ns("clear_search"), NULL, icon = bsicons::bs_icon("x-circle"),
+                     class = "btn-outline-secondary mt-4", title = "Clear search")
       ),
-      column(
-        width = 2,
-        actionButton(ns("clear_search"), "Clear", icon = icon("times")),
+
+      bslib::layout_columns(
+        col_widths = c(6, 6),
+        actionButton(ns("reload_lab"), "Reload lab data", icon = bsicons::bs_icon("arrow-repeat"),
+                     class = "btn-primary w-100"),
+        uiOutput(ns("lab_loaded_at"))
       ),
-      column(
-        width = 3,
-        actionButton(ns("set_thresholds"), "⚙ Thresholds", class = "btn-secondary")
-      )
+
+      hr(),
+      h6("Positivity thresholds"),
+      bslib::layout_columns(
+        col_widths = c(4, 4, 4),
+        numericInput(ns("threshold_pcr"), "PCR Cq max", value = 38, min = 1, max = 45, step = 1),
+        numericInput(ns("threshold_elisa"), "ELISA PP%", value = 50, min = 0, max = 100, step = 1),
+        numericInput(ns("threshold_ielisa"), "iELISA % inhibition", value = 35, min = 0, max = 100, step = 1)
+      ),
+
+      hr(),
+      uiOutput(ns("lab_status_ui"))
     ),
-    hr(),
-    tabsetPanel(
-      tabPanel("Overview",    DTOutput(ns("tbl_overview"))),
-      tabPanel("PCR",         DTOutput(ns("tbl_pcr"))),
-      tabPanel("ELISA PE",    DTOutput(ns("tbl_elisa_pe"))),
-      tabPanel("ELISA VSG",   DTOutput(ns("tbl_elisa_vsg"))),
-      tabPanel("iELISA",      DTOutput(ns("tbl_ielisa"))),
-      tabPanel("Concordance", DTOutput(ns("tbl_concordance"))),
-      tabPanel("Controls / QC",
-               h4("PCR Controls"),    DTOutput(ns("qc_pcr")),
-               h4("ELISA PE Controls"),  DTOutput(ns("qc_elisa_pe")),
-               h4("ELISA VSG Controls"), DTOutput(ns("qc_elisa_vsg")),
-               h4("iELISA Controls"),    DTOutput(ns("qc_ielisa"))
+
+    bslib::card(
+      bslib::card_header("Lab Results"),
+      bslib::navset_tab(
+        bslib::nav_panel(
+          "Overview",
+          DT::DTOutput(ns("tbl_overview"))
+        ),
+        bslib::nav_panel(
+          "PCR",
+          downloadButton(ns("dl_pcr"), "Download", class = "btn-sm mb-2"),
+          DT::DTOutput(ns("tbl_pcr"))
+        ),
+        bslib::nav_panel(
+          "ELISA PE",
+          downloadButton(ns("dl_elisa_pe"), "Download", class = "btn-sm mb-2"),
+          DT::DTOutput(ns("tbl_elisa_pe"))
+        ),
+        bslib::nav_panel(
+          "ELISA VSG",
+          downloadButton(ns("dl_elisa_vsg"), "Download", class = "btn-sm mb-2"),
+          DT::DTOutput(ns("tbl_elisa_vsg"))
+        ),
+        bslib::nav_panel(
+          "iELISA",
+          downloadButton(ns("dl_ielisa"), "Download", class = "btn-sm mb-2"),
+          DT::DTOutput(ns("tbl_ielisa"))
+        ),
+        bslib::nav_panel(
+          "Concordance",
+          downloadButton(ns("dl_concordance"), "Download", class = "btn-sm mb-2"),
+          DT::DTOutput(ns("tbl_concordance"))
+        ),
+        bslib::nav_panel(
+          "Controls / QC",
+          h5("PCR Controls"),
+          DT::DTOutput(ns("qc_pcr")),
+          hr(),
+          h5("ELISA PE Controls"),
+          DT::DTOutput(ns("qc_elisa_pe")),
+          hr(),
+          h5("ELISA VSG Controls"),
+          DT::DTOutput(ns("qc_elisa_vsg")),
+          hr(),
+          h5("iELISA Controls"),
+          DT::DTOutput(ns("qc_ielisa"))
+        )
       )
     )
   )
@@ -41,74 +93,341 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
 
-    # ======= 1. Load and cache lab data =======
-    lab_data <- reactive({
-      req(config)
+    thresholds_rv <- reactiveValues(
+      pcr = 38,
+      elisa = 50,
+      ielisa = 35
+    )
+
+    observeEvent(input$threshold_pcr, {
+      if (!is.null(input$threshold_pcr) && is.finite(input$threshold_pcr)) {
+        thresholds_rv$pcr <- input$threshold_pcr
+      }
+    })
+    observeEvent(input$threshold_elisa, {
+      if (!is.null(input$threshold_elisa) && is.finite(input$threshold_elisa)) {
+        thresholds_rv$elisa <- input$threshold_elisa
+      }
+    })
+    observeEvent(input$threshold_ielisa, {
+      if (!is.null(input$threshold_ielisa) && is.finite(input$threshold_ielisa)) {
+        thresholds_rv$ielisa <- input$threshold_ielisa
+      }
+    })
+
+    thresholds <- reactive({
       list(
-        pcr     = parse_pcr_results(config$paths$pcr_dir),
-        elisa_pe  = parse_elisa_pe(config$paths$elisa_pe_dir),
-        elisa_vsg = parse_elisa_vsg(config$paths$elisa_vsg_dir),
-        ielisa  = parse_ielisa(config$paths$ielisa_dir)
+        pcr = thresholds_rv$pcr,
+        elisa = thresholds_rv$elisa,
+        ielisa = thresholds_rv$ielisa
       )
     })
 
-    # ======= 2. Merge lab data by barcode/LabID =======
+    lab_reload <- reactiveVal(0)
+
+    observeEvent(config(), {
+      lab_reload(lab_reload() + 1)
+    }, ignoreNULL = FALSE)
+
+    observeEvent(input$reload_lab, {
+      lab_reload(lab_reload() + 1)
+    })
+
+    lab_state <- eventReactive(lab_reload(), {
+      cfg <- config()
+
+      if (is.null(cfg) || is.null(cfg$paths)) {
+        return(list(
+          data = list(
+            pcr = tibble::tibble(),
+            elisa_pe = tibble::tibble(),
+            elisa_vsg = tibble::tibble(),
+            ielisa = tibble::tibble()
+          ),
+          messages = "Configuration missing lab paths.",
+          timestamp = Sys.time()
+        ))
+      }
+
+      withProgress(message = "Loading lab results...", value = 0, {
+        incProgress(0.25, detail = "PCR")
+        pcr_tbl <- tryCatch(parse_pcr_results(cfg$paths$pcr_dir), error = function(e) {
+          attr <- tibble::tibble()
+          attr(attr, "messages") <- sprintf("PCR error: %s", e$message)
+          attr
+        })
+
+        incProgress(0.25, detail = "ELISA PE")
+        elisa_pe_tbl <- tryCatch(parse_elisa_pe(cfg$paths$elisa_pe_dir), error = function(e) {
+          attr <- tibble::tibble()
+          attr(attr, "messages") <- sprintf("ELISA PE error: %s", e$message)
+          attr
+        })
+
+        incProgress(0.2, detail = "ELISA VSG")
+        elisa_vsg_tbl <- tryCatch(parse_elisa_vsg(cfg$paths$elisa_vsg_dir), error = function(e) {
+          attr <- tibble::tibble()
+          attr(attr, "messages") <- sprintf("ELISA VSG error: %s", e$message)
+          attr
+        })
+
+        incProgress(0.15, detail = "iELISA")
+        ielisa_tbl <- tryCatch(parse_ielisa(cfg$paths$ielisa_dir), error = function(e) {
+          attr <- tibble::tibble()
+          attr(attr, "messages") <- sprintf("iELISA error: %s", e$message)
+          attr
+        })
+
+        incProgress(0.15, detail = "Merging results")
+
+        messages <- unique(stats::na.omit(unlist(list(
+          attr(pcr_tbl, "messages"),
+          attr(elisa_pe_tbl, "messages"),
+          attr(elisa_vsg_tbl, "messages"),
+          attr(ielisa_tbl, "messages")
+        ))))
+
+        list(
+          data = list(
+            pcr = tibble::as_tibble(pcr_tbl),
+            elisa_pe = tibble::as_tibble(elisa_pe_tbl),
+            elisa_vsg = tibble::as_tibble(elisa_vsg_tbl),
+            ielisa = tibble::as_tibble(ielisa_tbl)
+          ),
+          messages = messages,
+          timestamp = Sys.time()
+        )
+      })
+    }, ignoreNULL = FALSE)
+
+    lab_data <- reactive({
+      state <- lab_state()
+      state$data
+    })
+
+    lab_messages <- reactive({
+      state <- lab_state()
+      if (is.null(state$messages)) character() else state$messages
+    })
+
+    output$lab_loaded_at <- renderUI({
+      state <- lab_state()
+      if (is.null(state$timestamp)) {
+        div(class = "text-muted mt-3", "Not loaded yet")
+      } else {
+        div(class = "text-muted mt-3", paste("Last loaded:", format(state$timestamp, "%Y-%m-%d %H:%M")))
+      }
+    })
+
+    output$lab_status_ui <- renderUI({
+      state <- lab_state()
+      data <- state$data
+      counts <- vapply(data, nrow, integer(1), USE.NAMES = TRUE)
+
+      status_list <- tags$ul(
+        class = "list-unstyled mb-0",
+        lapply(names(counts), function(nm) {
+          tags$li(tags$strong(toupper(nm)), ": ", scales::comma(counts[[nm]]))
+        })
+      )
+
+      messages <- lab_messages()
+      msg_ui <- NULL
+      if (length(messages)) {
+        msg_ui <- bslib::callout(
+          title = "Warnings",
+          color = "warning",
+          lapply(messages, function(m) tags$p(m, class = "mb-1"))
+        )
+      }
+
+      tagList(status_list, msg_ui)
+    })
+
+    observeEvent(input$clear_search, {
+      updateTextInput(session, "barcode_search", value = "")
+    })
+
     joined <- reactive({
-      merge_lab_with_biobank(biobank_clean(), lab_data()) %>%
-        compute_flags(
-          pcr_cq_max  = input$threshold_pcr,
-          elisa_pp_cut = input$threshold_elisa,
-          ielisa_inh_cut = input$threshold_ielisa
-        )
+      bio <- biobank_clean()
+      state <- lab_state()
+      if (is.null(bio) || !nrow(bio)) return(tibble::tibble())
+
+      merged <- merge_lab_with_biobank(bio, state$data)
+      compute_flags(merged,
+                    pcr_cq_max = thresholds()$pcr,
+                    elisa_pp_cut = thresholds()$elisa,
+                    ielisa_inh_cut = thresholds()$ielisa)
     })
 
-    # ======= 3. Threshold modal =======
-    observeEvent(input$set_thresholds, {
-      showModal(
-        modalDialog(
-          title = "Set Thresholds",
-          numericInput(ns("threshold_pcr"), "PCR Cq max", value = 38, min = 1, max = 45),
-          numericInput(ns("threshold_elisa"), "ELISA PP% cut-off", value = 50, min = 0, max = 100),
-          numericInput(ns("threshold_ielisa"), "iELISA % inhibition cut-off", value = 35, min = 0, max = 100),
-          footer = modalButton("Close")
+    joined_filtered <- reactive({
+      df <- joined()
+      if (!nrow(df)) return(df)
+      search_input <- input$barcode_search
+      if (is.null(search_input)) search_input <- ""
+      term <- tolower(trimws(search_input))
+      if (!nzchar(term)) return(df)
+      df %>%
+        dplyr::mutate(
+          barcode_chr = tolower(trimws(as.character(dplyr::coalesce(barcode, "")))),
+          lab_id_chr = tolower(trimws(as.character(dplyr::coalesce(lab_id, ""))))
+        ) %>%
+        dplyr::filter(
+          grepl(term, barcode_chr, fixed = TRUE) |
+            grepl(term, lab_id_chr, fixed = TRUE)
+        ) %>%
+        dplyr::select(-barcode_chr, -lab_id_chr)
+    })
+
+    output$tbl_overview <- DT::renderDT({
+      df <- joined_filtered()
+      shiny::validate(shiny::need(nrow(df) > 0, "No lab results available for the current filters."))
+
+      overview <- df %>%
+        dplyr::mutate(
+          PCR_result = dplyr::case_when(PCR_pos %in% TRUE ~ "POS", PCR_pos %in% FALSE ~ "NEG", TRUE ~ ""),
+          ELISA_PE_result = dplyr::case_when(ELISA_PE_pos %in% TRUE ~ "POS", ELISA_PE_pos %in% FALSE ~ "NEG", TRUE ~ ""),
+          ELISA_VSG_result = dplyr::case_when(ELISA_VSG_pos %in% TRUE ~ "POS", ELISA_VSG_pos %in% FALSE ~ "NEG", TRUE ~ ""),
+          iELISA_result = dplyr::case_when(iELISA_pos %in% TRUE ~ "POS", iELISA_pos %in% FALSE ~ "NEG", TRUE ~ ""),
+          Any_positive = dplyr::case_when(Any_positive %in% TRUE ~ "Yes", Any_positive %in% FALSE ~ "No", TRUE ~ ""),
+          Concordant = dplyr::case_when(Concordant %in% TRUE ~ "Yes", Concordant %in% FALSE ~ "No", TRUE ~ "")
+        ) %>%
+        dplyr::mutate(dplyr::across(
+          dplyr::all_of(c("Cq_177T", "Cq_18S2", "Cq_RNAseP", "OD_PE", "PP_percent_PE",
+                           "OD_VSG", "PP_percent_VSG", "iELISA_pct_13", "iELISA_pct_15")),
+          ~round(.x, 2)
+        )) %>%
+        dplyr::select(
+          barcode, lab_id,
+          PCR_result, PCR_call, Cq_177T, Cq_18S2, Cq_RNAseP,
+          ELISA_PE_result, OD_PE, PP_percent_PE,
+          ELISA_VSG_result, OD_VSG, PP_percent_VSG,
+          iELISA_result, iELISA_pct_13, iELISA_pct_15,
+          Any_positive, Concordant
+        )
+
+      DT::datatable(
+        overview,
+        options = list(pageLength = 20, scrollX = TRUE, dom = "tip"),
+        rownames = FALSE,
+        filter = "top",
+        caption = htmltools::tags$caption(
+          style = "caption-side: bottom; text-align: left;",
+          "Exact PCR Cq values and ELISA/iELISA metrics shown per sample."
         )
       )
     })
 
-    # ======= 4. Overview table =======
-    output$tbl_overview <- renderDT({
-      t <- joined()
-      validate(need(nrow(t) > 0, "No lab results found"))
-      t %>%
-        select(barcode, lab_id, PCR_call, ELISA_PE_pos, ELISA_VSG_pos, iELISA_pos, Concordant) %>%
-        datatable(options = list(pageLength = 20, scrollX = TRUE))
+    output$tbl_pcr <- DT::renderDT({
+      pcr <- lab_data()$pcr
+      shiny::validate(shiny::need(nrow(pcr) > 0, "No PCR files parsed."))
+      DT::datatable(pcr, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
     })
 
-    # ======= 5. Each individual table =======
-    output$tbl_pcr <- renderDT({
-      lab_data()$pcr %>% datatable(options = list(pageLength = 15, scrollX = TRUE))
-    })
-    output$tbl_elisa_pe <- renderDT({
-      lab_data()$elisa_pe %>% datatable(options = list(pageLength = 15, scrollX = TRUE))
-    })
-    output$tbl_elisa_vsg <- renderDT({
-      lab_data()$elisa_vsg %>% datatable(options = list(pageLength = 15, scrollX = TRUE))
-    })
-    output$tbl_ielisa <- renderDT({
-      lab_data()$ielisa %>% datatable(options = list(pageLength = 15, scrollX = TRUE))
+    output$tbl_elisa_pe <- DT::renderDT({
+      elisa <- lab_data()$elisa_pe
+      shiny::validate(shiny::need(nrow(elisa) > 0, "No ELISA PE files parsed."))
+      DT::datatable(elisa, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
     })
 
-    # ======= 6. Concordance tab =======
-    output$tbl_concordance <- renderDT({
-      joined() %>%
-        count(Concordant, PCR_call, ELISA_PE_pos, ELISA_VSG_pos, iELISA_pos) %>%
-        datatable(options = list(pageLength = 20))
+    output$tbl_elisa_vsg <- DT::renderDT({
+      elisa <- lab_data()$elisa_vsg
+      shiny::validate(shiny::need(nrow(elisa) > 0, "No ELISA VSG files parsed."))
+      DT::datatable(elisa, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
     })
 
-    # ======= 7. Controls / QC =======
-    output$qc_pcr        <- renderDT({ parse_pcr_controls(config$paths$pcr_dir) })
-    output$qc_elisa_pe   <- renderDT({ parse_elisa_pe_controls(config$paths$elisa_pe_dir) })
-    output$qc_elisa_vsg  <- renderDT({ parse_elisa_vsg_controls(config$paths$elisa_vsg_dir) })
-    output$qc_ielisa     <- renderDT({ parse_ielisa_controls(config$paths$ielisa_dir) })
+    output$tbl_ielisa <- DT::renderDT({
+      iel <- lab_data()$ielisa
+      shiny::validate(shiny::need(nrow(iel) > 0, "No iELISA files parsed."))
+      DT::datatable(iel, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
+    })
+
+    output$tbl_concordance <- DT::renderDT({
+      df <- joined()
+      shiny::validate(shiny::need(nrow(df) > 0, "No lab data available to compute concordance."))
+      conc <- df %>%
+        dplyr::count(PCR_pos, ELISA_PE_pos, ELISA_VSG_pos, iELISA_pos, Concordant, name = "n")
+      DT::datatable(conc, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
+    })
+
+    status_palette <- function(status) {
+      unique_status <- unique(status)
+      colors <- ifelse(unique_status == "OK", "#e8f5e9", "#fdecea")
+      names(colors) <- unique_status
+      list(status = unique_status, colors = colors)
+    }
+
+    output$qc_pcr <- DT::renderDT({
+      df <- summarise_pcr_controls(lab_data()$pcr, thresholds()$pcr)
+      shiny::validate(shiny::need(nrow(df) > 0, "No PCR control rows detected."))
+      pal <- status_palette(df$Status)
+      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
+        DT::formatStyle("Status", target = "row",
+                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+    })
+
+    output$qc_elisa_pe <- DT::renderDT({
+      df <- summarise_elisa_controls(lab_data()$elisa_pe, thresholds()$elisa, "ELISA PE")
+      shiny::validate(shiny::need(nrow(df) > 0, "No ELISA PE control rows detected."))
+      pal <- status_palette(df$Status)
+      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
+        DT::formatStyle("Status", target = "row",
+                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+    })
+
+    output$qc_elisa_vsg <- DT::renderDT({
+      df <- summarise_elisa_controls(lab_data()$elisa_vsg, thresholds()$elisa, "ELISA VSG")
+      shiny::validate(shiny::need(nrow(df) > 0, "No ELISA VSG control rows detected."))
+      pal <- status_palette(df$Status)
+      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
+        DT::formatStyle("Status", target = "row",
+                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+    })
+
+    output$qc_ielisa <- DT::renderDT({
+      df <- summarise_ielisa_controls(joined(), thresholds()$ielisa)
+      shiny::validate(shiny::need(nrow(df) > 0, "No iELISA control rows detected."))
+      pal <- status_palette(df$Status)
+      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
+        DT::formatStyle("Status", target = "row",
+                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+    })
+
+    output$dl_pcr <- downloadHandler(
+      filename = function() paste0("pcr_results_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) {
+        readr::write_csv(lab_data()$pcr, file)
+      }
+    )
+    output$dl_elisa_pe <- downloadHandler(
+      filename = function() paste0("elisa_pe_results_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) {
+        readr::write_csv(lab_data()$elisa_pe, file)
+      }
+    )
+    output$dl_elisa_vsg <- downloadHandler(
+      filename = function() paste0("elisa_vsg_results_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) {
+        readr::write_csv(lab_data()$elisa_vsg, file)
+      }
+    )
+    output$dl_ielisa <- downloadHandler(
+      filename = function() paste0("ielisa_results_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) {
+        readr::write_csv(lab_data()$ielisa, file)
+      }
+    )
+    output$dl_concordance <- downloadHandler(
+      filename = function() paste0("lab_concordance_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) {
+        readr::write_csv(joined(), file)
+      }
+    )
+
+    return(list(
+      lab_joined = joined,
+      thresholds = thresholds,
+      messages = lab_messages
+    ))
   })
 }

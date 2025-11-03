@@ -31,7 +31,10 @@ mod_geo_map_ui <- function(id) {
                            "DP samples" = "n_dp",
                            "% Female" = "pct_female",
                            "PCR positivity %" = "pcr_pos_rate",
-                           "iELISA positivity %" = "ielisa_pos_rate"
+                           "ELISA PE positivity %" = "elisa_pe_pos_rate",
+                           "ELISA VSG positivity %" = "elisa_vsg_pos_rate",
+                           "iELISA positivity %" = "ielisa_pos_rate",
+                           "Any test positivity %" = "any_pos_rate"
                          ),
                          selected = "n"),
       
@@ -62,7 +65,7 @@ mod_geo_map_ui <- function(id) {
 #' @param lab_joined Reactive containing joined lab results
 #' @param config Reactive containing app configuration
 #' @export
-mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
+mod_geo_map_server <- function(id, biobank_filtered, lab_joined, lab_thresholds = NULL, config) {
   shiny::moduleServer(id, function(input, output, session) {
     
     # Reactive values
@@ -165,25 +168,50 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
     })
     
     # Compute zone summaries
+    threshold_vals <- shiny::reactive({
+      if (is.null(lab_thresholds)) {
+        list(pcr = NA_real_, elisa = NA_real_, ielisa = NA_real_)
+      } else {
+        vals <- lab_thresholds()
+        list(
+          pcr = suppressWarnings(as.numeric(vals$pcr)),
+          elisa = suppressWarnings(as.numeric(vals$elisa)),
+          ielisa = suppressWarnings(as.numeric(vals$ielisa))
+        )
+      }
+    })
+
     zone_summary <- shiny::reactive({
       bio <- biobank_filtered()
       shiny::req(bio, nrow(bio) > 0)
-      
+
       lab <- lab_joined()
-      
+
       # Join lab results if available
       if (!is.null(lab) && nrow(lab) > 0) {
         bio <- bio %>%
           dplyr::left_join(
-            lab %>% dplyr::select(barcode, lab_id, 
-                                  is_pcr_pos, any_ielisa_pos = any_pos),
+            lab %>% dplyr::select(
+              barcode, lab_id,
+              PCR_pos, PCR_tested,
+              ELISA_PE_pos, ELISA_PE_tested,
+              ELISA_VSG_pos, ELISA_VSG_tested,
+              iELISA_pos, iELISA_tested,
+              Any_positive
+            ),
             by = c("barcode", "lab_id")
           )
       } else {
         bio <- bio %>%
-          dplyr::mutate(is_pcr_pos = NA, any_ielisa_pos = NA)
+          dplyr::mutate(
+            PCR_pos = NA, PCR_tested = FALSE,
+            ELISA_PE_pos = NA, ELISA_PE_tested = FALSE,
+            ELISA_VSG_pos = NA, ELISA_VSG_tested = FALSE,
+            iELISA_pos = NA, iELISA_tested = FALSE,
+            Any_positive = NA
+          )
       }
-      
+
       # Normalize for joining
       bio <- bio %>%
         dplyr::mutate(
@@ -199,17 +227,37 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
           n_da = sum(study == "DA", na.rm = TRUE),
           n_dp = sum(study == "DP", na.rm = TRUE),
           pct_female = mean(sex == "F", na.rm = TRUE) * 100,
-          
+
           # PCR metrics
-          pcr_n = sum(!is.na(is_pcr_pos)),
-          pcr_pos = sum(is_pcr_pos %in% TRUE, na.rm = TRUE),
+          pcr_n = sum(PCR_tested, na.rm = TRUE),
+          pcr_pos = sum(PCR_pos %in% TRUE, na.rm = TRUE),
           pcr_pos_rate = if (pcr_n > 0) (pcr_pos / pcr_n * 100) else NA_real_,
-          
+
+          # ELISA PE metrics
+          elisa_pe_n = sum(ELISA_PE_tested, na.rm = TRUE),
+          elisa_pe_pos = sum(ELISA_PE_pos %in% TRUE, na.rm = TRUE),
+          elisa_pe_pos_rate = if (elisa_pe_n > 0) (elisa_pe_pos / elisa_pe_n * 100) else NA_real_,
+
+          # ELISA VSG metrics
+          elisa_vsg_n = sum(ELISA_VSG_tested, na.rm = TRUE),
+          elisa_vsg_pos = sum(ELISA_VSG_pos %in% TRUE, na.rm = TRUE),
+          elisa_vsg_pos_rate = if (elisa_vsg_n > 0) (elisa_vsg_pos / elisa_vsg_n * 100) else NA_real_,
+
           # iELISA metrics
-          iel_n = sum(!is.na(any_ielisa_pos)),
-          iel_pos = sum(any_ielisa_pos %in% TRUE, na.rm = TRUE),
+          iel_n = sum(iELISA_tested, na.rm = TRUE),
+          iel_pos = sum(iELISA_pos %in% TRUE, na.rm = TRUE),
           ielisa_pos_rate = if (iel_n > 0) (iel_pos / iel_n * 100) else NA_real_,
-          
+
+          # Any positivity
+          any_tested = sum(
+            dplyr::coalesce(PCR_tested, FALSE) |
+              dplyr::coalesce(ELISA_PE_tested, FALSE) |
+              dplyr::coalesce(ELISA_VSG_tested, FALSE) |
+              dplyr::coalesce(iELISA_tested, FALSE)
+          ),
+          any_pos = sum(Any_positive %in% TRUE, na.rm = TRUE),
+          any_pos_rate = if (any_tested > 0) (any_pos / any_tested * 100) else NA_real_,
+
           # Latest sample
           last_sample = max(date_sample, na.rm = TRUE),
           
@@ -274,13 +322,17 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
                            n_dp = shp_data$n_dp,
                            pct_female = shp_data$pct_female,
                            pcr_pos_rate = shp_data$pcr_pos_rate,
-                           ielisa_pos_rate = shp_data$ielisa_pos_rate)
+                           elisa_pe_pos_rate = shp_data$elisa_pe_pos_rate,
+                           elisa_vsg_pos_rate = shp_data$elisa_vsg_pos_rate,
+                           ielisa_pos_rate = shp_data$ielisa_pos_rate,
+                           any_pos_rate = shp_data$any_pos_rate)
       
       # Color palette
       pal <- leaflet::colorBin("YlGnBu", domain = metric_col, 
                                bins = 5, na.color = "#cccccc")
       
       # Create labels
+      thr <- threshold_vals()
       labels <- sprintf(
         "<strong>%s</strong><br/>
         Province: %s<br/>
@@ -289,8 +341,11 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
         Female: %.1f%%<br/>
         <hr style='margin:3px 0'/>
         <strong>Lab Results:</strong><br/>
-        PCR: %s/%s positive (%.1f%%)<br/>
-        iELISA: %s/%s positive (%.1f%%)<br/>
+        PCR ≤ %s Cq: %s/%s positive (%.1f%%)<br/>
+        ELISA PE ≥ %s%%: %s/%s positive (%.1f%%)<br/>
+        ELISA VSG ≥ %s%%: %s/%s positive (%.1f%%)<br/>
+        iELISA ≥ %s%% inhib.: %s/%s positive (%.1f%%)<br/>
+        Any test positive: %s/%s (%.1f%%)<br/>
         <hr style='margin:3px 0'/>
         Last sample: %s<br/>
         <strong>Transport (median days):</strong><br/>
@@ -301,12 +356,25 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
         scales::comma(shp_data$n_da),
         scales::comma(shp_data$n_dp),
         shp_data$pct_female,
+        ifelse(is.na(thr$pcr), "—", round(thr$pcr, 1)),
         scales::comma(shp_data$pcr_pos),
         scales::comma(shp_data$pcr_n),
         shp_data$pcr_pos_rate,
+        ifelse(is.na(thr$elisa), "—", round(thr$elisa, 1)),
+        scales::comma(shp_data$elisa_pe_pos),
+        scales::comma(shp_data$elisa_pe_n),
+        shp_data$elisa_pe_pos_rate,
+        ifelse(is.na(thr$elisa), "—", round(thr$elisa, 1)),
+        scales::comma(shp_data$elisa_vsg_pos),
+        scales::comma(shp_data$elisa_vsg_n),
+        shp_data$elisa_vsg_pos_rate,
+        ifelse(is.na(thr$ielisa), "—", round(thr$ielisa, 1)),
         scales::comma(shp_data$iel_pos),
         scales::comma(shp_data$iel_n),
         shp_data$ielisa_pos_rate,
+        scales::comma(shp_data$any_pos),
+        scales::comma(shp_data$any_tested),
+        shp_data$any_pos_rate,
         format(shp_data$last_sample, "%Y-%m-%d"),
         shp_data$med_field_hs,
         shp_data$med_hs_lsd,
