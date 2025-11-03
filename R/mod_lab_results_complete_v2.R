@@ -920,47 +920,31 @@ controls_data <- shiny::reactive({
   cfg <- config()
   
   if (is.null(lab)) {
-    message("No lab data for controls extraction")
-    return(list(
-      pcr = tibble::tibble(), 
-      elisa = tibble::tibble(), 
-      ielisa = tibble::tibble()
-    ))
+    return(list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble()))
   }
   
-  # Use the extract_all_controls function from helpers_lab_merge.R
+  # Source the working version
+  if (!exists("extract_pcr_controls_simple")) {
+    source("R/helpers_controls_WORKING.R", local = TRUE)
+  }
+  
+  message("Extracting controls...")
+  
   tryCatch({
-    message("Calling extract_all_controls...")
-    
-    # Ensure helpers are loaded
-    if (!exists("extract_all_controls")) {
-      source("R/helpers_lab_merge.R", local = TRUE)
-    }
-    
-    controls <- extract_all_controls(lab, cfg)
-    
-    message("Controls extracted:")
-    message("  PCR: ", nrow(controls$pcr), " rows")
-    message("  ELISA: ", nrow(controls$elisa), " rows")
-    message("  iELISA: ", nrow(controls$ielisa), " rows")
-    
-    controls
-    
-  }, error = function(e) {
-    warning("Failed to extract controls: ", e$message)
-    shiny::showNotification(
-      paste("Controls extraction failed:", e$message),
-      type = "error",
-      duration = 10
-    )
     list(
-      pcr = tibble::tibble(), 
-      elisa = tibble::tibble(), 
-      ielisa = tibble::tibble()
+      pcr = extract_pcr_controls_simple(lab$pcr),
+      elisa = dplyr::bind_rows(
+        extract_elisa_controls_simple(cfg$paths$elisa_pe_dir, "ELISA_PE"),
+        extract_elisa_controls_simple(cfg$paths$elisa_vsg_dir, "ELISA_VSG")
+      ),
+      ielisa = extract_ielisa_controls_simple(cfg$paths$ielisa_dir)
     )
+  }, error = function(e) {
+    warning("Control extraction failed: ", e$message)
+    list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble())
   })
 })
-
+      
 # Filter controls based on user selection
 controls_filtered <- shiny::reactive({
   ctrl <- controls_data()
