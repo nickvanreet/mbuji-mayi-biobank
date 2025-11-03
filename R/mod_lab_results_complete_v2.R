@@ -87,6 +87,13 @@ mod_lab_results_ui <- function(id) {
         # === OVERVIEW TAB ===
         bslib::nav_panel(
           "Overview",
+            # ADD THIS AT THE TOP:
+          bslib::card(
+            bslib::card_header("Current Positivity Thresholds"),
+            bslib::card_body(
+              shiny::htmlOutput(ns("threshold_display"))
+            )
+          ),
           
           bslib::layout_columns(
             col_widths = c(2, 2, 2, 2, 2, 2),
@@ -572,7 +579,66 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
-    
+
+
+
+    output$threshold_display <- shiny::renderUI({
+  htmltools::tags$table(
+    class = "table table-sm table-bordered",
+    style = "font-size: 0.9em;",
+    htmltools::tags$thead(
+      htmltools::tags$tr(
+        htmltools::tags$th("Assay"),
+        htmltools::tags$th("Marker"),
+        htmltools::tags$th("Threshold"),
+        htmltools::tags$th("Rule")
+      )
+    ),
+    htmltools::tags$tbody(
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "3", style = "vertical-align: middle;", 
+                           htmltools::strong("PCR")),
+        htmltools::tags$td("177T"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_177t)),
+        htmltools::tags$td("Positive if ANY target ≤ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("18S2"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_18s2)),
+        htmltools::tags$td("")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("RNAseP"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_rnasep)),
+        htmltools::tags$td("(Control only)")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "2", style = "vertical-align: middle;", 
+                           htmltools::strong("ELISA")),
+        htmltools::tags$td("PE PP%"),
+        htmltools::tags$td(sprintf("≥ %.0f%%", input$threshold_elisa_pe)),
+        htmltools::tags$td("Positive if PP% ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("VSG PP%"),
+        htmltools::tags$td(sprintf("≥ %.0f%%", input$threshold_elisa_vsg)),
+        htmltools::tags$td("Positive if PP% ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "2", style = "vertical-align: middle;", 
+                           htmltools::strong("iELISA")),
+        htmltools::tags$td("LiTat 1.3"),
+        htmltools::tags$td(sprintf("≥ %.0f%% inhibition", input$threshold_ielisa_13)),
+        htmltools::tags$td("Positive if EITHER antigen ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("LiTat 1.5"),
+        htmltools::tags$td(sprintf("≥ %.0f%% inhibition", input$threshold_ielisa_15)),
+        htmltools::tags$td("")
+      )
+    )
+  )
+})
     output$vb_any_pos <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
