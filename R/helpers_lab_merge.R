@@ -90,12 +90,20 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
     elisa_pe_processed <- lab$elisa_pe %>%
       dplyr::mutate(
         # pp_percent is already a percentage (0-100), not 0-1
+        # Ensure it's numeric and properly parsed
         pp_percent = suppressWarnings(as.numeric(pp_percent)),
-        # Create call from PP% or text result
+        # Validate range (should be 0-100 for percentages)
+        pp_percent = dplyr::if_else(
+          !is.na(pp_percent) & pp_percent >= 0 & pp_percent <= 100,
+          pp_percent,
+          NA_real_
+        ),
+        # Create call from PP% or text result with EXPLICIT threshold comparison
         elisa_pe_call = dplyr::case_when(
           !is.na(result_pp50) ~ canonicalise_call(result_pp50),
+          # Explicit: pp_percent must be >= threshold (e.g., 50)
           !is.na(pp_percent) & pp_percent >= thresholds$elisa_pe_pp ~ "pos",
-          !is.na(pp_percent) ~ "neg",
+          !is.na(pp_percent) & pp_percent < thresholds$elisa_pe_pp ~ "neg",
           TRUE ~ NA_character_
         ),
         elisa_pe_is_pos = elisa_pe_call == "pos",
@@ -136,11 +144,18 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
     
     elisa_vsg_processed <- lab$elisa_vsg %>%
       dplyr::mutate(
+        # Ensure numeric and validate range
         pp_percent = suppressWarnings(as.numeric(pp_percent)),
+        pp_percent = dplyr::if_else(
+          !is.na(pp_percent) & pp_percent >= 0 & pp_percent <= 100,
+          pp_percent,
+          NA_real_
+        ),
+        # Explicit threshold comparison
         elisa_vsg_call = dplyr::case_when(
           !is.na(result_pp50) ~ canonicalise_call(result_pp50),
           !is.na(pp_percent) & pp_percent >= thresholds$elisa_vsg_pp ~ "pos",
-          !is.na(pp_percent) ~ "neg",
+          !is.na(pp_percent) & pp_percent < thresholds$elisa_vsg_pp ~ "neg",
           TRUE ~ NA_character_
         ),
         elisa_vsg_is_pos = elisa_vsg_call == "pos",
@@ -259,20 +274,30 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
         elisa_pe_is_pos %||% FALSE,
         elisa_vsg_is_pos %||% FALSE,
         ielisa_is_pos %||% FALSE
-      ),
-      
-      # FIXED CONCORDANCE LOGIC:
-      # Concordant = TRUE if all tested assays have same result
-      # If only 1 test done, it's automatically concordant
-      # If 0 tests done, it's NA
-      Concordant = dplyr::case_when(
-        Tests_done == 0 ~ NA,
-        Tests_done == 1 ~ TRUE,  # Single test is always concordant
-        Tests_pos == 0 ~ TRUE,    # All negative = concordant
-        Tests_pos == Tests_done ~ TRUE,  # All positive = concordant
-        TRUE ~ FALSE  # Mixed results = discordant
       )
     )
+  
+  # Apply proper concordance classification
+  if (exists("classify_concordance")) {
+    result <- classify_concordance(result)
+  } else {
+    # Fallback: source the concordance helper
+    tryCatch({
+      source("R/helpers_concordance.R", local = TRUE)
+      result <- classify_concordance(result)
+    }, error = function(e) {
+      warning("Could not load concordance classifier, using simple logic")
+      result <<- result %>%
+        dplyr::mutate(
+          concordance_class = dplyr::case_when(
+            Tests_done == 0 ~ "No data",
+            Tests_pos == 0 ~ "Negative concordant",
+            Tests_pos == Tests_done ~ "All positive",
+            TRUE ~ "Discordant"
+          )
+        )
+    })
+  }
   
   message("Final merged data: ", nrow(result), " rows")
   message("  Any positive: ", sum(result$Any_pos %||% FALSE, na.rm = TRUE))
