@@ -27,8 +27,13 @@ try({
 
 # --- PATH NORMALISER ---------------------------------------------------------
 safe_path <- function(p) {
-  if (is.null(p) || !nzchar(p)) return(p)
+  if (is.null(p) || !length(p)) return(p)
+  if (length(p) > 1) p <- paste(p, collapse = "")
+  if (is.na(p)) return(NA_character_)
+  if (!nzchar(p)) return(p)
+
   p0 <- enc2native(p)
+  p0 <- trimws(gsub("[\r\n]+", "", p0))
   p1 <- normalizePath(p0, winslash = "/", mustWork = FALSE)
   if (dir.exists(p1) || file.exists(p1)) return(p1)
   
@@ -43,7 +48,7 @@ safe_path <- function(p) {
     unc1 <- normalizePath(unc, winslash = "/", mustWork = FALSE)
     if (dir.exists(unc1) || file.exists(unc1)) return(unc1)
   }
-  p  # return original so we can report issues
+  p0  # return cleaned original so we can report issues
 }
 
 # --- CONFIG LOADER -----------------------------------------------------------
@@ -416,6 +421,26 @@ server <- function(input, output, session) {
     if (length(input$filter_sex))                  df <- df %>% dplyr::filter(sex %in% input$filter_sex)
     df
   })
+
+  # --- MODULES -------------------------------------------------------------
+  lab_modules <- mod_lab_results_server(
+    "lab_results",
+    biobank_clean = clean_data,
+    config = cfg
+  )
+
+  mod_extractions_qc_server(
+    "extractions_qc",
+    biobank_clean = clean_data,
+    config = cfg
+  )
+
+  mod_geo_map_server(
+    "geo_map",
+    biobank_filtered = filtered_data,
+    lab_joined = lab_modules$lab_joined,
+    config = cfg
+  )
   
   # KPIs
   output$vb_total <- renderText({

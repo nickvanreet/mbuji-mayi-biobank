@@ -115,6 +115,29 @@ mod_lab_results_ui <- function(id) {
   )
 }
 
+# helper to normalise directory paths using global safe_path when available
+lab_normalise_path <- function(path) {
+  if (is.null(path) || !length(path)) return(path)
+  if (length(path) > 1) path <- paste(path, collapse = "")
+  if (is.na(path)) return(NA_character_)
+  path <- trimws(path)
+  if (!nzchar(path)) return("")
+
+  if (exists("safe_path", mode = "function")) {
+    out <- tryCatch(safe_path(path), error = function(e) path)
+    if (is.null(out) || !nzchar(out)) return(path)
+    return(out)
+  }
+  path
+}
+
+lab_dir_label <- function(path) {
+  if (is.null(path) || !length(path) || is.na(path)) return("not set")
+  path <- trimws(path)
+  if (!nzchar(path)) return("not set")
+  path
+}
+
 #' Lab Results Module - Server
 #' @param id Module namespace ID
 #' @param biobank_clean Reactive containing cleaned biobank data
@@ -122,12 +145,12 @@ mod_lab_results_ui <- function(id) {
 #' @export
 mod_lab_results_server <- function(id, biobank_clean, config) {
   shiny::moduleServer(id, function(input, output, session) {
-    
+
     # Reactive values
     lab_pcr <- shiny::reactiveVal(tibble::tibble())
     lab_elisa <- shiny::reactiveVal(tibble::tibble())
     lab_ielisa <- shiny::reactiveVal(tibble::tibble())
-    
+
     # Initialize paths from config
     shiny::observe({
       cfg <- config()
@@ -155,21 +178,66 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         return()
       }
       
+      # Normalise directories from inputs/config
+      dir_pcr <- lab_normalise_path(input$pcr_dir)
+      dir_elisa_pe <- lab_normalise_path(input$elisa_pe_dir)
+      dir_elisa_vsg <- lab_normalise_path(input$elisa_vsg_dir)
+      dir_ielisa <- lab_normalise_path(input$ielisa_dir)
+
       # Extract keys for joining
-      keys <- bio %>% 
-        dplyr::select(barcode, lab_id) %>% 
+      keys <- bio %>%
+        dplyr::select(barcode, lab_id) %>%
         dplyr::distinct()
-      
+
+      missing_dirs <- character()
+
       # Read PCR
-      pcr <- read_pcr_dir(input$pcr_dir, biobank_df = keys)
+      has_dir <- function(path) {
+        is.character(path) && length(path) == 1 && !is.na(path) && nzchar(path)
+      }
+      dir_is_valid <- function(path) {
+        has_dir(path) && isTRUE(dir.exists(path))
+      }
+
+      pcr <- tibble::tibble()
+      if (!dir_is_valid(dir_pcr)) {
+        missing_dirs <- c(missing_dirs, sprintf("PCR (%s)", lab_dir_label(dir_pcr)))
+      } else {
+        pcr_files <- list.files(dir_pcr, pattern = "\\.xlsx?$", full.names = TRUE)
+        if (!length(pcr_files)) {
+          missing_dirs <- c(missing_dirs, sprintf("PCR (no Excel files in %s)", dir_pcr))
+        }
+        pcr <- read_pcr_dir(dir_pcr, biobank_df = keys)
+      }
       lab_pcr(pcr)
-      
+
       # Read ELISA
-      elisa <- read_elisa_dirs(input$elisa_pe_dir, input$elisa_vsg_dir)
+      elisa <- tibble::tibble()
+      if (!has_dir(dir_elisa_pe) && !has_dir(dir_elisa_vsg)) {
+        missing_dirs <- c(missing_dirs, "ELISA (no folder set)")
+      } else {
+        elisa <- read_elisa_dirs(dir_elisa_pe, dir_elisa_vsg)
+        if (!nrow(elisa) && !dir_is_valid(dir_elisa_pe) && !dir_is_valid(dir_elisa_vsg)) {
+          missing_dirs <- c(missing_dirs, sprintf("ELISA (%s | %s)",
+                                                 lab_dir_label(dir_elisa_pe),
+                                                 lab_dir_label(dir_elisa_vsg)))
+        } else if (!nrow(elisa)) {
+          missing <- character()
+          if (dir_is_valid(dir_elisa_pe) && !length(list.files(dir_elisa_pe, pattern = "\\.xlsx?$"))) {
+            missing <- c(missing, sprintf("PE (%s)", dir_elisa_pe))
+          }
+          if (dir_is_valid(dir_elisa_vsg) && !length(list.files(dir_elisa_vsg, pattern = "\\.xlsx?$"))) {
+            missing <- c(missing, sprintf("VSG (%s)", dir_elisa_vsg))
+          }
+          if (length(missing)) {
+            missing_dirs <- c(missing_dirs, paste("ELISA no Excel files:", paste(missing, collapse = "; ")))
+          }
+        }
+      }
       # Map barcodes via lab_id if missing
       if (nrow(elisa) > 0) {
         elisa <- elisa %>%
-          dplyr::left_join(keys, by = "lab_id", 
+          dplyr::left_join(keys, by = "lab_id",
                            suffix = c("_orig", "_mapped")) %>%
           dplyr::mutate(
             barcode = dplyr::coalesce(barcode_orig, barcode_mapped)
@@ -179,18 +247,37 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       lab_elisa(elisa)
       
       # Read iELISA
-      iel <- read_ielisa_dir(input$ielisa_dir)
+      iel <- tibble::tibble()
+      if (!dir_is_valid(dir_ielisa)) {
+        missing_dirs <- c(missing_dirs, sprintf("iELISA (%s)", lab_dir_label(dir_ielisa)))
+      } else {
+        if (!length(list.files(dir_ielisa, pattern = "\\.xlsx?$"))) {
+          missing_dirs <- c(missing_dirs, sprintf("iELISA (no Excel files in %s)", dir_ielisa))
+        }
+        iel <- read_ielisa_dir(dir_ielisa)
+      }
       lab_ielisa(iel)
-      
-      output$lab_status <- shiny::renderText(
-        sprintf("PCR: %s | ELISA: %s | iELISA: %s",
-                scales::comma(nrow(pcr)),
-                scales::comma(nrow(elisa)),
-                scales::comma(nrow(iel)))
+
+      status_parts <- c(
+        sprintf("PCR: %s", scales::comma(nrow(pcr))),
+        sprintf("ELISA: %s", scales::comma(nrow(elisa))),
+        sprintf("iELISA: %s", scales::comma(nrow(iel)))
       )
-      
-      shiny::showNotification("Lab results loaded successfully.", 
-                              type = "message")
+
+      if (length(missing_dirs)) {
+        status_parts <- c(status_parts,
+                          paste("⚠️ Missing/empty:", paste(missing_dirs, collapse = "; ")))
+      }
+
+      output$lab_status <- shiny::renderText(paste(status_parts, collapse = " | "))
+
+      if ((nrow(pcr) + nrow(elisa) + nrow(iel)) > 0) {
+        shiny::showNotification("Lab results loaded successfully.",
+                                type = "message")
+      } else {
+        shiny::showNotification("Lab result folders were processed but no records were found.",
+                                type = "warning")
+      }
     })
     
     # Joined lab results (per barcode/lab_id)
@@ -598,6 +685,10 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
 #' @param biobank_df Biobank keys for joining
 #' @return Tibble with PCR data
 read_pcr_dir <- function(dir_pcr, biobank_df = NULL) {
+  dir_pcr <- lab_normalise_path(dir_pcr)
+  if (is.null(dir_pcr) || is.na(dir_pcr) || !nzchar(dir_pcr)) {
+    return(tibble::tibble())
+  }
   if (!dir.exists(dir_pcr)) return(tibble::tibble())
   
   files <- list.files(dir_pcr, pattern = "\\.xlsx?$", full.names = TRUE)
@@ -674,6 +765,9 @@ read_pcr_dir <- function(dir_pcr, biobank_df = NULL) {
 #' @param dir_vsg ELISA VSG directory
 #' @return Tibble with ELISA data
 read_elisa_dirs <- function(dir_pe, dir_vsg) {
+  dir_pe <- lab_normalise_path(dir_pe)
+  dir_vsg <- lab_normalise_path(dir_vsg)
+
   read_elisa_file <- function(path, assay_label) {
     tryCatch({
       sheets <- readxl::excel_sheets(path)
@@ -713,6 +807,7 @@ read_elisa_dirs <- function(dir_pe, dir_vsg) {
   }
   
   read_dir <- function(dir, label) {
+    if (is.null(dir) || is.na(dir) || !nzchar(dir)) return(tibble::tibble())
     if (!dir.exists(dir)) return(tibble::tibble())
     files <- list.files(dir, pattern = "\\.xlsx?$", full.names = TRUE)
     if (!length(files)) return(tibble::tibble())
@@ -729,6 +824,10 @@ read_elisa_dirs <- function(dir_pe, dir_vsg) {
 #' @param dir_ielisa Directory path
 #' @return Tibble with iELISA data
 read_ielisa_dir <- function(dir_ielisa) {
+  dir_ielisa <- lab_normalise_path(dir_ielisa)
+  if (is.null(dir_ielisa) || is.na(dir_ielisa) || !nzchar(dir_ielisa)) {
+    return(tibble::tibble())
+  }
   if (!dir.exists(dir_ielisa)) return(tibble::tibble())
   
   files <- list.files(dir_ielisa, pattern = "\\.xlsx?$", full.names = TRUE)
