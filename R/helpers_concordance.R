@@ -7,10 +7,17 @@
 #' @param df Data frame with test results and _is_pos/_tested flags
 #' @return Data frame with concordance_class and concordance_subtype
 #' @export
+#' Classify concordance with CORRECTED logic
+#' @param df Data frame with test results and flags
+#' @return Data frame with concordance_class
+#' @export
 classify_concordance <- function(df) {
+  
+  message("Classifying concordance for ", nrow(df), " samples")
+  
   df %>%
     dplyr::mutate(
-      # Determine which tests were actually run
+      # Determine which tests were run
       pcr_run = PCR_tested %||% FALSE,
       vsg_run = elisa_vsg_tested %||% FALSE,
       pe_run = elisa_pe_tested %||% FALSE,
@@ -22,62 +29,77 @@ classify_concordance <- function(df) {
       pe_pos = elisa_pe_is_pos %||% FALSE,
       ielisa_pos = ielisa_is_pos %||% FALSE,
       
-      # Any ELISA positive (VSG OR PE OR iELISA)
+      # Any ELISA positive
       any_elisa_pos = vsg_pos | pe_pos | ielisa_pos,
       
-      # Count tests performed and positive
+      # Count tests
       n_tests_run = sum(pcr_run, vsg_run, pe_run, ielisa_run),
       n_tests_pos = sum(pcr_pos, vsg_pos, pe_pos, ielisa_pos),
       
-      # Concordance classification (hierarchical)
+      # CONCORDANCE CLASSIFICATION (hierarchical)
       concordance_class = dplyr::case_when(
         # 0. No tests run
         n_tests_run == 0 ~ "No data",
         
-        # 1. True concordant: PCR+ AND any ELISA+
-        pcr_pos & any_elisa_pos ~ "True concordant",
+        # 1. All negative (all tests negative)
+        n_tests_run > 0 & n_tests_pos == 0 ~ "Negative concordant",
         
-        # 2. Serological concordant: iELISA+ AND (VSG+ AND PE+) AND PCR-/absent
+        # 2. All positive (all tests that were run are positive)
+        n_tests_run > 0 & n_tests_pos == n_tests_run ~ "All positive concordant",
+        
+        # 3. True concordant (PCR+ AND any ELISA+, but not all tests positive)
+        pcr_pos & any_elisa_pos & n_tests_pos < n_tests_run ~ "True concordant (PCR+/ELISA+)",
+        
+        # 4. Serological concordant (iELISA+ AND VSG+ AND PE+, but PCR-)
         ielisa_pos & vsg_pos & pe_pos & !pcr_pos ~ "Serological concordant",
         
-        # 3. Indirect ELISA concordant: (VSG+ AND PE+) AND iELISA-/absent AND PCR-/absent
+        # 5. Indirect ELISA concordant (VSG+ AND PE+, but iELISA- and PCR-)
         vsg_pos & pe_pos & !ielisa_pos & !pcr_pos ~ "Indirect ELISA concordant",
         
-        # 4. Negative concordant: All run assays negative
-        n_tests_pos == 0 & n_tests_run > 0 ~ "Negative concordant",
-        
-        # 5. Discordant: Everything else
+        # 6. Everything else is discordant
         TRUE ~ "Discordant"
       ),
       
-      # Subtype for discordant cases
+      # Subtype for discordant
       concordance_subtype = dplyr::case_when(
         concordance_class != "Discordant" ~ NA_character_,
         
-        # Discordant subtypes
-        pcr_pos & !any_elisa_pos ~ "PCR-only positive",
-        !pcr_pos & n_tests_pos == 1 & vsg_pos ~ "VSG-only positive",
-        !pcr_pos & n_tests_pos == 1 & pe_pos ~ "PE-only positive",
-        !pcr_pos & n_tests_pos == 1 & ielisa_pos ~ "iELISA-only positive",
+        # Single test positive
+        n_tests_pos == 1 & pcr_pos ~ "PCR-only positive",
+        n_tests_pos == 1 & vsg_pos ~ "VSG-only positive",
+        n_tests_pos == 1 & pe_pos ~ "PE-only positive",
+        n_tests_pos == 1 & ielisa_pos ~ "iELISA-only positive",
         
-        # Serology discordant (PE ≠ VSG)
-        pe_run & vsg_run & (pe_pos != vsg_pos) ~ "Serology discordant (PE≠VSG)",
+        # PE/VSG disagree
+        pe_run & vsg_run & (pe_pos != vsg_pos) ~ "PE≠VSG",
         
-        # iELISA vs indirect mismatch
-        ielisa_pos & (!vsg_pos | !pe_pos) ~ "iELISA vs indirect mismatch",
-        (vsg_pos | pe_pos) & ielisa_run & !ielisa_pos ~ "Indirect vs iELISA mismatch",
+        # Other patterns
+        pcr_pos & !any_elisa_pos ~ "PCR+ but ELISA-",
+        !pcr_pos & any_elisa_pos ~ "ELISA+ but PCR-",
         
-        # Other discordant
-        TRUE ~ "Other discordant"
+        TRUE ~ "Other pattern"
       ),
       
-      # Combined label for display
+      # Combined label
       concordance_label = dplyr::if_else(
         is.na(concordance_subtype),
         concordance_class,
         paste0(concordance_class, " (", concordance_subtype, ")")
+      ),
+      
+      # Simple TRUE/FALSE concordant flag for calculations
+      Concordant = concordance_class %in% c(
+        "Negative concordant",
+        "All positive concordant",
+        "True concordant (PCR+/ELISA+)",
+        "Serological concordant",
+        "Indirect ELISA concordant"
       )
-    )
+    ) %>%
+    # Remove temporary columns
+    dplyr::select(-pcr_run, -vsg_run, -pe_run, -ielisa_run,
+                  -pcr_pos, -vsg_pos, -pe_pos, -ielisa_pos,
+                  -any_elisa_pos, -n_tests_run, -n_tests_pos)
 }
 
 #' Get concordance summary statistics
