@@ -188,6 +188,8 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
             # Find volume column
             volume_raw = dplyr::coalesce(
               volume_total_echantillon_sang_drs_ml,
+              volume_ml,
+              volume,
               NA_character_
             ),
             
