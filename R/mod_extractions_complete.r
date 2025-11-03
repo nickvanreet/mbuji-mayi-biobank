@@ -302,10 +302,13 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
       
       # Date filter
       if (!is.null(input$qc_date_rng) && length(input$qc_date_rng) == 2) {
-        df <- df %>%
-          dplyr::filter(!is.na(date_prelev) &
-                          date_prelev >= input$qc_date_rng[1] &
-                          date_prelev <= input$qc_date_rng[2])
+        dr <- as.Date(input$qc_date_rng)
+        if (all(!is.na(dr))) {
+          df <- df %>%
+            dplyr::filter(!is.na(date_prelev) &
+                            date_prelev >= dr[1] &
+                            date_prelev <= dr[2])
+        }
       }
       
       # Outlier filter
