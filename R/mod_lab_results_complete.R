@@ -915,53 +915,28 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     # === CONTROLS QC (NEW SECTION) ===
     
     # Extract controls from lab data
-    controls_data <- shiny::reactive({
-      lab <- lab_data_raw()
-      cfg <- config()
-      
-      if (is.null(lab)) return(tibble::tibble())
-      
-      tryCatch({
-        # Extract controls using the working patterns
-        pcr_ctrl <- if (!is.null(lab$pcr) && nrow(lab$pcr) > 0) {
-          extract_pcr_controls(lab$pcr)
-        } else {
-          tibble::tibble()
+controls_data <- shiny::reactive({
+        lab <- lab_data_raw()
+        cfg <- config()
+        
+        if (is.null(lab)) {
+          return(list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble()))
         }
         
-        elisa_ctrl <- if (!is.null(cfg) && "paths" %in% names(cfg)) {
-          extract_elisa_controls(
-            elisa_pe_data = lab$elisa_pe,
-            elisa_vsg_data = lab$elisa_vsg,
-            pe_dir = cfg$paths$elisa_pe_dir,
-            vsg_dir = cfg$paths$elisa_vsg_dir
-          )
-        } else {
-          tibble::tibble()
-        }
-        
-        ielisa_ctrl <- if (!is.null(cfg) && "paths" %in% names(cfg)) {
-          extract_ielisa_controls(ielisa_dir = cfg$paths$ielisa_dir)
-        } else {
-          tibble::tibble()
-        }
-        
-        # Combine all controls into standard format
-        list(
-          pcr = pcr_ctrl,
-          elisa = elisa_ctrl,
-          ielisa = ielisa_ctrl
-        )
-        
-      }, error = function(e) {
-        warning("Failed to extract controls: ", e$message)
-        list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble())
-      })
-    })
-    
+        # Call the centralized extraction function
+        extract_all_controls(lab, cfg)
+      })    
     # Filter controls
-    controls_filtered <- shiny::reactive({
-      controls <- controls_data()
+# In controls_filtered reactive:
+      controls_filtered <- shiny::reactive({
+          ctrl <- controls_data()  # This is now a list!
+      
+      # Combine all controls into one dataframe for filtering
+      all_controls <- dplyr::bind_rows(
+        if (nrow(ctrl$pcr) > 0) ctrl$pcr %>% mutate(assay = "PCR") else NULL,
+        if (nrow(ctrl$elisa) > 0) ctrl$elisa else NULL,
+        if (nrow(ctrl$ielisa) > 0) ctrl$ielisa %>% mutate(assay = "iELISA") else NULL
+      )
       
       if (is.null(controls) || !nrow(controls)) {
         return(tibble::tibble())
