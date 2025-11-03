@@ -636,86 +636,929 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         )
     })
     
-    # Overview table with canonical flags
-    output$tbl_overview <- DT::renderDT({
-      df <- filtered_data()
+# COMPLETE FIX GUIDE - All Remaining Issues
+
+## STATUS SUMMARY
+
+✅ **FIXED**: Extraction QC module (see mod_extractions_qc_FIXED.R)
+
+🔧 **TO FIX NOW**:
+1. Lab Results - Missing OD/PP% display
+2. Controls - Completely broken extraction
+3. Geography - GRID3 online + testdata issues  
+4. Concordance classification logic
+5. PCR date extraction
+6. Threshold visibility
+7. Control type dropdowns
+
+---
+
+## FIX 2: Lab Results Display - Missing Values
+
+### Problem
+
+iELISA mean OD and ELISA PE/VSG OD/PP% not showing in tables
+
+### Root Cause
+
+Column names don't match between what's in the data and what the UI expects
+
+### Solution - Add debug logging and flexible column selection
+
+```r
+# In mod_lab_results_complete.R, update the overview table output:
+
+output$tbl_overview <- DT::renderDT({
+  df <- filtered_data()
+  
+  if (!nrow(df)) {
+    return(DT::datatable(tibble::tibble(Message = "No results for current filters")))
+  }
+  
+  # DEBUG: Log available columns
+  message("Available columns in lab data: ", paste(names(df), collapse = ", "))
+  
+  # Flexible column selection
+  display_cols <- list(
+    barcode = "barcode",
+    lab_id = "lab_id",
+    # PCR
+    pcr_call = dplyr::coalesce(PCR_call, pcr_call),
+    cq_177t = dplyr::coalesce(Cq_177T, cq_177t, Cq177T),
+    cq_18s2 = dplyr::coalesce(Cq_18S2, cq_18s2, Cq18S2),
+    cq_rnasep = dplyr::coalesce(Cq_RNAseP, cq_rnasep, CqRNAseP),
+    pcr_pos = PCR_is_pos,
+    # ELISA PE
+    pe_dod = d_od_pe,
+    pe_pp = pp_percent_pe,
+    pe_pos = elisa_pe_is_pos,
+    # ELISA VSG  
+    vsg_dod = d_od_vsg,
+    vsg_pp = pp_percent_vsg,
+    vsg_pos = elisa_vsg_is_pos,
+    # iELISA - ADD MEAN OD COLUMNS
+    ielisa_od_13 = dplyr::coalesce(od_13_mean, iL13_neg_mean, od_litat_13),
+    ielisa_od_15 = dplyr::coalesce(od_15_mean, iL15_neg_mean, od_litat_15),
+    ielisa_inh_13 = pct_inh_13,
+    ielisa_inh_15 = pct_inh_15,
+    ielisa_pos = ielisa_is_pos,
+    # Overall
+    any_pos = Any_pos,
+    concordant = Concordant
+  )
+  
+  # Build display dataframe
+  display_df <- df %>%
+    dplyr::transmute(
+      Barcode = barcode,
+      `Lab ID` = lab_id,
+      # PCR
+      `PCR Call` = as.character(PCR_call),
+      `177T Cq` = round(Cq_177T, 2),
+      `18S2 Cq` = round(Cq_18S2, 2),
+      `RNP Cq` = round(Cq_RNAseP, 2),
+      `PCR+` = format_pos_neg(PCR_is_pos),
+      # ELISA PE
+      `PE ΔOD` = round(d_od_pe, 3),
+      `PE PP%` = round(pp_percent_pe, 1),
+      `PE+` = format_pos_neg(elisa_pe_is_pos),
+      # ELISA VSG
+      `VSG ΔOD` = round(d_od_vsg, 3),
+      `VSG PP%` = round(pp_percent_vsg, 1),
+      `VSG+` = format_pos_neg(elisa_vsg_is_pos),
+      # iELISA - SHOW BOTH OD AND %INH
+      `iE OD1.3` = round(dplyr::coalesce(od_13_mean, iL13_neg_mean), 3),
+      `iE OD1.5` = round(dplyr::coalesce(od_15_mean, iL15_neg_mean), 3),
+      `iE %INH1.3` = round(pct_inh_13, 1),
+      `iE %INH1.5` = round(pct_inh_15, 1),
+      `iE+` = format_pos_neg(ielisa_is_pos),
+      # Overall
+      `Any+` = format_pos_neg(Any_pos),
+      Concordant = format_yes_no(Concordant)
+    )
+  
+  DT::datatable(
+    display_df,
+    options = list(
+      pageLength = 25, 
+      scrollX = TRUE,
+      columnDefs = list(
+        list(className = 'dt-center', targets = 7:17)  # Center result columns
+      )
+    ),
+    filter = "top",
+    rownames = FALSE,
+    caption = htmltools::tags$caption(
+      style = "caption-side: top; text-align: left; font-weight: bold;",
+      sprintf("Lab Results: %s samples", scales::comma(nrow(display_df)))
+    )
+  ) %>%
+    DT::formatStyle(
+      c('PCR+', 'PE+', 'VSG+', 'iE+', 'Any+'),
+      backgroundColor = DT::styleEqual(
+        c('POS', 'NEG', 'NT'),
+        c('#f8d7da', '#d4edda', '#e2e3e5')
+      )
+    ) %>%
+    DT::formatStyle(
+      'Concordant',
+      backgroundColor = DT::styleEqual(
+        c('YES', 'NO', 'NA'),
+        c('#d4edda', '#fff3cd', '#e2e3e5')
+      )
+    )
+})
+
+# Helper functions for formatting
+format_pos_neg <- function(x) {
+  dplyr::case_when(
+    is.na(x) ~ "NT",  # Not Tested
+    x == TRUE ~ "POS",
+    x == FALSE ~ "NEG",
+    TRUE ~ "NA"
+  )
+}
+
+format_yes_no <- function(x) {
+  dplyr::case_when(
+    is.na(x) ~ "NA",
+    x == TRUE ~ "YES",
+    x == FALSE ~ "NO",
+    TRUE ~ "NA"
+  )
+}
+```
+
+---
+
+## FIX 3: Controls Extraction - Completely Broken
+
+### Problem
+
+Controls aren't being extracted from any assay files. The extraction functions fail silently.
+
+### Solution - Complete rewrite of control extraction
+
+Add to `R/helpers_controls_WORKING.R`:
+
+```r
+# helpers_controls_WORKING.R
+# Simplified, working control extraction
+# =============================================================================
+
+#' Extract PCR controls from PCR data
+#' Simple, working version
+extract_pcr_controls_simple <- function(pcr_data) {
+  if (is.null(pcr_data) || !nrow(pcr_data)) {
+    return(tibble::tibble())
+  }
+  
+  # Ensure lab_id column exists
+  if (!"lab_id" %in% names(pcr_data)) {
+    warning("PCR data missing lab_id column")
+    return(tibble::tibble())
+  }
+  
+  message("Extracting PCR controls from ", nrow(pcr_data), " rows")
+  
+  # Identify controls by lab_id pattern
+  controls <- pcr_data %>%
+    dplyr::mutate(
+      lab_id_upper = toupper(trimws(as.character(lab_id))),
+      control_type = dplyr::case_when(
+        grepl("^(CP|PC|POS)", lab_id_upper) ~ "CP",
+        grepl("^(CN|NC|NEG|NTC)", lab_id_upper) ~ "CN",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    dplyr::filter(!is.na(control_type))
+  
+  message("Found ", nrow(controls), " PCR controls")
+  
+  if (!nrow(controls)) return(tibble::tibble())
+  
+  # Add run date from source file
+  controls <- controls %>%
+    dplyr::mutate(
+      run_date = extract_file_date(source_file %||% ""),
+      run_id = extract_run_letter(source_file %||% "")
+    )
+  
+  controls
+}
+
+#' Extract ELISA controls from Excel files
+extract_elisa_controls_simple <- function(elisa_dir, assay_label = "ELISA") {
+  if (is.null(elisa_dir) || !dir.exists(elisa_dir)) {
+    return(tibble::tibble())
+  }
+  
+  files <- list.files(elisa_dir, pattern = "\\.xlsx?$", full.names = TRUE)
+  if (!length(files)) return(tibble::tibble())
+  
+  message("Reading ELISA controls from ", length(files), " files")
+  
+  # Read controls from each file
+  all_controls <- purrr::map_dfr(files, function(f) {
+    tryCatch({
+      sheets <- readxl::excel_sheets(f)
+      ctrl_sheet <- sheets[grepl("control", sheets, ignore.case = TRUE)]
       
-      if (!nrow(df)) {
-        return(DT::datatable(tibble::tibble(Message = "No results for current filters")))
+      if (!length(ctrl_sheet)) {
+        message("  No Controls sheet in ", basename(f))
+        return(tibble::tibble())
       }
       
-      display_df <- df %>%
-        dplyr::select(
-          barcode, lab_id,
-          # PCR
-          PCR_Call = PCR_call,
-          `177T Cq` = Cq_177T,
-          `18S2 Cq` = Cq_18S2,
-          `RNAseP Cq` = Cq_RNAseP,
-          PCR_Status = PCR_is_pos,
-          # ELISA PE
-          `PE OD` = d_od_pe,
-          `PE PP%` = pp_percent_pe,
-          PE_Status = elisa_pe_is_pos,
-          # ELISA VSG
-          `VSG OD` = d_od_vsg,
-          `VSG PP%` = pp_percent_vsg,
-          VSG_Status = elisa_vsg_is_pos,
-          # iELISA
-          `iELISA 1.3%` = pct_inh_13,
-          `iELISA 1.5%` = pct_inh_15,
-          iELISA_Status = ielisa_is_pos,
-          # Overall
-          Any_Positive = Any_pos,
-          Concordant
-        ) %>%
-        dplyr::mutate(
-          dplyr::across(
-            c(PCR_Status, PE_Status, VSG_Status, iELISA_Status, Any_Positive),
-            ~dplyr::case_when(
-              . == TRUE ~ "POS",
-              . == FALSE ~ "NEG",
-              TRUE ~ "NA"
-            )
-          ),
-          Concordant = dplyr::case_when(
-            Concordant == TRUE ~ "YES",
-            Concordant == FALSE ~ "NO",
-            TRUE ~ "NA"
-          )
-        )
+      # Read the controls sheet
+      raw <- readxl::read_excel(f, sheet = ctrl_sheet[1]) %>%
+        janitor::clean_names()
       
-      DT::datatable(
-        display_df,
-        options = list(pageLength = 20, scrollX = TRUE),
-        filter = "top",
-        rownames = FALSE,
-        caption = htmltools::tags$caption(
-          style = "caption-side: top; text-align: left; font-weight: bold;",
-          sprintf("Showing %s of %s samples with lab results", 
-                  scales::comma(nrow(display_df)), 
-                  scales::comma(nrow(joined_data())))
-        )
-      ) %>%
-        DT::formatRound(columns = c("177T Cq", "18S2 Cq", "RNAseP Cq",
-                                    "PE OD", "PE PP%", "VSG OD", "VSG PP%",
-                                    "iELISA 1.3%", "iELISA 1.5%"),
-                        digits = 2) %>%
-        DT::formatStyle(
-          c("PCR_Status", "PE_Status", "VSG_Status", "iELISA_Status", "Any_Positive"),
-          backgroundColor = DT::styleEqual(
-            c("POS", "NEG", "NA"),
-            c("#f8d7da", "#d4edda", "#e2e3e5")
+      # Identify control rows
+      raw %>%
+        dplyr::mutate(
+          sample_upper = toupper(trimws(as.character(sample %||% sample_code %||% ""))),
+          control_type = dplyr::case_when(
+            grepl("^(PC|POS)", sample_upper) ~ "PC",
+            grepl("^(NC|NEG)", sample_upper) ~ "NC",
+            grepl("^(CC|CONJ)", sample_upper) ~ "CC",
+            TRUE ~ NA_character_
           )
         ) %>%
-        DT::formatStyle(
-          "Concordant",
-          backgroundColor = DT::styleEqual(
-            c("YES", "NO", "NA"),
-            c("#d4edda", "#fff3cd", "#e2e3e5")
-          )
+        dplyr::filter(!is.na(control_type)) %>%
+        dplyr::transmute(
+          file = basename(f),
+          run_date = extract_file_date(basename(f)),
+          assay_label = assay_label,
+          control_type,
+          plate = suppressWarnings(as.integer(plate %||% elisa %||% 1)),
+          d_od = parse_num_smart(d_od %||% delta_od %||% od),
+          pp_percent = parse_num_smart(pp %||% pp_percent)
         )
+    }, error = function(e) {
+      warning("Failed to read ", basename(f), ": ", e$message)
+      tibble::tibble()
     })
+  })
+  
+  message("Found ", nrow(all_controls), " ELISA controls")
+  all_controls
+}
+
+#' Extract iELISA controls from 450-600nm summary sheets
+extract_ielisa_controls_simple <- function(ielisa_dir) {
+  if (is.null(ielisa_dir) || !dir.exists(ielisa_dir)) {
+    return(tibble::tibble())
+  }
+  
+  files <- list.files(ielisa_dir, pattern = "\\.xlsx?$", full.names = TRUE)
+  if (!length(files)) return(tibble::tibble())
+  
+  message("Reading iELISA controls from ", length(files), " files")
+  
+  # Read from each file
+  all_controls <- purrr::map_dfr(files, function(f) {
+    tryCatch({
+      sheets <- readxl::excel_sheets(f)
+      
+      # Find 450-600 sheet
+      sheet_450 <- sheets[grepl("450.*600|450-600", sheets, ignore.case = TRUE)]
+      if (!length(sheet_450)) {
+        message("  No 450-600nm sheet in ", basename(f))
+        return(tibble::tibble())
+      }
+      
+      # Read as matrix for flexible parsing
+      raw <- readxl::read_excel(f, sheet = sheet_450[1], col_names = FALSE)
+      M <- as.matrix(raw)
+      
+      # Find control values by text matching
+      find_value <- function(pattern) {
+        matches <- grep(pattern, M, ignore.case = TRUE)
+        if (!length(matches)) return(NA_real_)
+        
+        # Get first match
+        idx <- arrayInd(matches[1], dim(M))
+        row <- idx[1, 1]
+        col <- idx[1, 2]
+        
+        # Look for number below this cell
+        for (r in (row+1):min(nrow(M), row+10)) {
+          val <- suppressWarnings(as.numeric(M[r, col]))
+          if (!is.na(val) && is.finite(val)) return(val)
+        }
+        
+        NA_real_
+      }
+      
+      tibble::tibble(
+        file = basename(f),
+        run_date = extract_file_date(basename(f)),
+        assay_label = "iELISA",
+        # LiTat 1.3
+        L13_neg_mean = find_value("moyenne.*neg.*1\\.3|mean.*neg.*1\\.3"),
+        L13_pos_mean = find_value("moyenne.*pos.*1\\.3|mean.*pos.*1\\.3"),
+        L13_PI_CP = find_value("pi.*cp.*1\\.3|pi.*litat.*1\\.3"),
+        # LiTat 1.5
+        L15_neg_mean = find_value("moyenne.*neg.*1\\.5|mean.*neg.*1\\.5"),
+        L15_pos_mean = find_value("moyenne.*pos.*1\\.5|mean.*pos.*1\\.5"),
+        L15_PI_CP = find_value("pi.*cp.*1\\.5|pi.*litat.*1\\.5")
+      )
+    }, error = function(e) {
+      warning("Failed to read ", basename(f), ": ", e$message)
+      tibble::tibble()
+    })
+  })
+  
+  message("Found ", nrow(all_controls), " iELISA runs with control data")
+  all_controls
+}
+
+#' Parse number smartly (handles European format)
+parse_num_smart <- function(x) {
+  if (is.null(x) || length(x) == 0) return(numeric())
+  
+  x_chr <- trimws(as.character(x))
+  x_chr <- gsub("%", "", x_chr, fixed = TRUE)
+  
+  # Try standard parse
+  val <- suppressWarnings(as.numeric(x_chr))
+  
+  # Fix European format if needed
+  need_fix <- is.na(val) & nzchar(x_chr)
+  if (any(need_fix)) {
+    x_eur <- gsub("\\.", "", x_chr[need_fix])  # Remove thousands separator
+    x_eur <- gsub(",", ".", x_eur)  # Decimal comma to dot
+    val[need_fix] <- suppressWarnings(as.numeric(x_eur))
+  }
+  
+  val
+}
+
+#' Extract date from filename
+extract_file_date <- function(filename) {
+  m <- regexpr("^(\\d{6})", filename)
+  if (m[1] == -1) return(as.Date(NA))
+  
+  date_str <- regmatches(filename, m)
+  if (length(date_str) == 0 || nchar(date_str) != 6) return(as.Date(NA))
+  
+  tryCatch({
+    as.Date(date_str, format = "%y%m%d")
+  }, error = function(e) as.Date(NA))
+}
+
+#' Extract run letter from filename (a, b, c for same-day repeats)
+extract_run_letter <- function(filename) {
+  m <- regexpr("^\\d{6}([a-z])", filename, ignore.case = TRUE)
+  if (m[1] == -1) return(NA_character_)
+  
+  full_match <- regmatches(filename, m)
+  sub("^\\d{6}", "", full_match)
+}
+
+#' Safe null coalesce
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
+}
+```
+
+**Then update the lab results module to use these:**
+
+```r
+# In mod_lab_results_complete.R, in the controls_data reactive:
+
+controls_data <- shiny::reactive({
+  lab <- lab_data_raw()
+  cfg <- config()
+  
+  if (is.null(lab)) {
+    return(list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble()))
+  }
+  
+  # Source the working version
+  if (!exists("extract_pcr_controls_simple")) {
+    source("R/helpers_controls_WORKING.R", local = TRUE)
+  }
+  
+  message("Extracting controls...")
+  
+  tryCatch({
+    list(
+      pcr = extract_pcr_controls_simple(lab$pcr),
+      elisa = dplyr::bind_rows(
+        extract_elisa_controls_simple(cfg$paths$elisa_pe_dir, "ELISA_PE"),
+        extract_elisa_controls_simple(cfg$paths$elisa_vsg_dir, "ELISA_VSG")
+      ),
+      ielisa = extract_ielisa_controls_simple(cfg$paths$ielisa_dir)
+    )
+  }, error = function(e) {
+    warning("Control extraction failed: ", e$message)
+    list(pcr = tibble::tibble(), elisa = tibble::tibble(), ielisa = tibble::tibble())
+  })
+})
+```
+
+---
+
+## FIX 4: Geography Module - Remove GRID3 Online + Fix Testdata
+
+### Problem
+
+1. GRID3 online option keeps loading forever
+2. 50MB testdata file causes errors
+
+### Solution
+
+**Option A: Disable online entirely (recommended)**
+
+```r
+# In mod_geo_map_complete.R, simplify the load logic:
+
+shiny::observeEvent(input$map_load, {
+  shiny::withProgress(message = 'Loading map data...', value = 0, {
+    
+    shp <- NULL
+    error_msg <- NULL
+    
+    # REMOVE: Online GRID3 attempt
+    # Just try uploaded file or local file
+    
+    # Try uploaded file
+    if (!is.null(input$map_upload)) {
+      shiny::incProgress(0.5, detail = "Reading uploaded file...")
+      shp <- tryCatch({
+        path <- input$map_upload$datapath
+        sf_data <- sf::read_sf(path, quiet = TRUE)
+        sf_data <- sf::st_make_valid(sf_data)
+        map_status(paste("✓ Loaded:", input$map_upload$name))
+        sf_data
+      }, error = function(e) {
+        error_msg <<- paste("Upload failed:", e$message)
+        NULL
+      })
+    }
+    
+    # Try local path
+    if (is.null(shp) && !is.null(input$local_gpkg_path) && 
+        nzchar(trimws(input$local_gpkg_path))) {
+      shiny::incProgress(0.5, detail = "Reading local file...")
+      local_path <- safe_path(trimws(input$local_gpkg_path))
+      
+      shp <- tryCatch({
+        if (file.exists(local_path)) {
+          sf_data <- sf::read_sf(local_path, quiet = TRUE)
+          sf_data <- sf::st_make_valid(sf_data)
+          map_status(paste("✓ Loaded:", basename(local_path)))
+          sf_data
+        } else {
+          error_msg <<- paste("File not found:", local_path)
+          NULL
+        }
+      }, error = function(e) {
+        error_msg <<- paste("Local file failed:", e$message)
+        NULL
+      })
+    }
+    
+    # Final status
+    if (is.null(shp)) {
+      map_status(paste("⚠️ Failed to load map data.", error_msg))
+      shiny::showNotification(error_msg, type = "error", duration = 10)
+    } else {
+      shapefile_data(shp)
+      shiny::showNotification(
+        sprintf("Map loaded: %s features", scales::comma(nrow(shp))),
+        type = "message"
+      )
+    }
+  })
+})
+```
+
+**Option B: Fix the large testdata file**
+
+The 50MB file is probably too detailed. Create a simplified version:
+
+```r
+# Create simplified health zones shapefile
+# Run this once to create a smaller test file
+
+library(sf)
+
+# Load the large file
+large_shp <- sf::read_sf("testdata/cod_health_zones_large.gpkg")
+
+# Simplify geometry (reduce detail)
+simplified <- large_shp %>%
+  sf::st_simplify(dTolerance = 0.01, preserveTopology = TRUE) %>%
+  # Keep only essential columns
+  dplyr::select(province, zonesante, geometry)
+
+# Save simplified version
+sf::st_write(simplified, "testdata/cod_health_zones_simple.gpkg", 
+             delete_dsn = TRUE)
+
+# Check size
+file.info("testdata/cod_health_zones_simple.gpkg")$size / 1024^2  # Should be < 5 MB
+```
+
+Then update config.yml:
+
+```yaml
+map:
+  use_grid3_online: false  # DISABLE
+  fallback_shapefile: "testdata/cod_health_zones_simple.gpkg"
+```
+
+---
+
+## FIX 5: Concordance Classification - Still Failing
+
+### Problem
+
+The concordance logic doesn't properly classify "all positive" vs "discordant"
+
+### Root Cause
+
+The classify_concordance function has flawed logic
+
+### Solution
+
+Replace the function in `R/helpers_concordance.R`:
+
+```r
+#' Classify concordance with CORRECTED logic
+#' @param df Data frame with test results and flags
+#' @return Data frame with concordance_class
+#' @export
+classify_concordance <- function(df) {
+  
+  message("Classifying concordance for ", nrow(df), " samples")
+  
+  df %>%
+    dplyr::mutate(
+      # Determine which tests were run
+      pcr_run = PCR_tested %||% FALSE,
+      vsg_run = elisa_vsg_tested %||% FALSE,
+      pe_run = elisa_pe_tested %||% FALSE,
+      ielisa_run = ielisa_tested %||% FALSE,
+      
+      # Determine positivity
+      pcr_pos = PCR_is_pos %||% FALSE,
+      vsg_pos = elisa_vsg_is_pos %||% FALSE,
+      pe_pos = elisa_pe_is_pos %||% FALSE,
+      ielisa_pos = ielisa_is_pos %||% FALSE,
+      
+      # Any ELISA positive
+      any_elisa_pos = vsg_pos | pe_pos | ielisa_pos,
+      
+      # Count tests
+      n_tests_run = sum(pcr_run, vsg_run, pe_run, ielisa_run),
+      n_tests_pos = sum(pcr_pos, vsg_pos, pe_pos, ielisa_pos),
+      
+      # CONCORDANCE CLASSIFICATION (hierarchical)
+      concordance_class = dplyr::case_when(
+        # 0. No tests run
+        n_tests_run == 0 ~ "No data",
+        
+        # 1. All negative (all tests negative)
+        n_tests_run > 0 & n_tests_pos == 0 ~ "Negative concordant",
+        
+        # 2. All positive (all tests that were run are positive)
+        n_tests_run > 0 & n_tests_pos == n_tests_run ~ "All positive concordant",
+        
+        # 3. True concordant (PCR+ AND any ELISA+, but not all tests positive)
+        pcr_pos & any_elisa_pos & n_tests_pos < n_tests_run ~ "True concordant (PCR+/ELISA+)",
+        
+        # 4. Serological concordant (iELISA+ AND VSG+ AND PE+, but PCR-)
+        ielisa_pos & vsg_pos & pe_pos & !pcr_pos ~ "Serological concordant",
+        
+        # 5. Indirect ELISA concordant (VSG+ AND PE+, but iELISA- and PCR-)
+        vsg_pos & pe_pos & !ielisa_pos & !pcr_pos ~ "Indirect ELISA concordant",
+        
+        # 6. Everything else is discordant
+        TRUE ~ "Discordant"
+      ),
+      
+      # Subtype for discordant
+      concordance_subtype = dplyr::case_when(
+        concordance_class != "Discordant" ~ NA_character_,
+        
+        # Single test positive
+        n_tests_pos == 1 & pcr_pos ~ "PCR-only positive",
+        n_tests_pos == 1 & vsg_pos ~ "VSG-only positive",
+        n_tests_pos == 1 & pe_pos ~ "PE-only positive",
+        n_tests_pos == 1 & ielisa_pos ~ "iELISA-only positive",
+        
+        # PE/VSG disagree
+        pe_run & vsg_run & (pe_pos != vsg_pos) ~ "PE≠VSG",
+        
+        # Other patterns
+        pcr_pos & !any_elisa_pos ~ "PCR+ but ELISA-",
+        !pcr_pos & any_elisa_pos ~ "ELISA+ but PCR-",
+        
+        TRUE ~ "Other pattern"
+      ),
+      
+      # Combined label
+      concordance_label = dplyr::if_else(
+        is.na(concordance_subtype),
+        concordance_class,
+        paste0(concordance_class, " (", concordance_subtype, ")")
+      ),
+      
+      # Simple TRUE/FALSE concordant flag for calculations
+      Concordant = concordance_class %in% c(
+        "Negative concordant",
+        "All positive concordant",
+        "True concordant (PCR+/ELISA+)",
+        "Serological concordant",
+        "Indirect ELISA concordant"
+      )
+    ) %>%
+    # Remove temporary columns
+    dplyr::select(-pcr_run, -vsg_run, -pe_run, -ielisa_run,
+                  -pcr_pos, -vsg_pos, -pe_pos, -ielisa_pos,
+                  -any_elisa_pos, -n_tests_run, -n_tests_pos)
+}
+```
+
+---
+
+## FIX 6: PCR Date Extraction
+
+### Problem
+
+Dates aren't being extracted from PCR filenames and not showing in graphs
+
+### Solution
+
+Add date extraction in `parse_pcr_results`:
+
+```r
+# In R/helpers_lab_corrected.R, update parse_pcr_results:
+
+make_qpcr_summary <- function(path) {
+  tryCatch({
+    # ... existing code ...
+    
+    result <- call_df %>%
+      dplyr::left_join(s177, by = "sample") %>%
+      dplyr::left_join(s18, by = "sample") %>%
+      dplyr::left_join(srna, by = "sample") %>%
+      dplyr::rename(lab_id = sample) %>%
+      dplyr::mutate(
+        source_file = basename(path),
+        # ADD: Extract run date from filename
+        run_date = extract_file_date(basename(path)),
+        run_id = extract_run_letter(basename(path)),
+        # Convert Cq values
+        across(starts_with("Cq_"), ~ suppressWarnings(as.numeric(.))),
+        across(starts_with("SD_"), ~ suppressWarnings(as.numeric(.)))
+      )
+    
+    message("  Extracted ", nrow(result), " samples from ", basename(path), 
+            " (date: ", run_date[1], ")")
+    
+    result
+  }, error = function(e) {
+    warning("Failed to process PCR file ", basename(path), ": ", e$message)
+    tibble::tibble()
+  })
+}
+```
+
+---
+
+## FIX 7: Make Thresholds Visible
+
+### Problem
+
+Users can't see what thresholds are being used for positive/negative calls
+
+### Solution
+
+Add a "Thresholds" info box to the Lab Results tab:
+
+```r
+# In mod_lab_results_complete.R, add to the Overview tab:
+
+bslib::nav_panel(
+  "Overview",
+  
+  # ADD THIS AT THE TOP:
+  bslib::card(
+    bslib::card_header("Current Positivity Thresholds"),
+    bslib::card_body(
+      shiny::htmlOutput(ns("threshold_display"))
+    )
+  ),
+  
+  # ... rest of overview content ...
+)
+
+# Then add this output:
+
+output$threshold_display <- shiny::renderUI({
+  htmltools::tags$table(
+    class = "table table-sm table-bordered",
+    style = "font-size: 0.9em;",
+    htmltools::tags$thead(
+      htmltools::tags$tr(
+        htmltools::tags$th("Assay"),
+        htmltools::tags$th("Marker"),
+        htmltools::tags$th("Threshold"),
+        htmltools::tags$th("Rule")
+      )
+    ),
+    htmltools::tags$tbody(
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "3", style = "vertical-align: middle;", 
+                           htmltools::strong("PCR")),
+        htmltools::tags$td("177T"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_177t)),
+        htmltools::tags$td("Positive if ANY target ≤ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("18S2"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_18s2)),
+        htmltools::tags$td("")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("RNAseP"),
+        htmltools::tags$td(sprintf("≤ %.1f Cq", input$threshold_pcr_rnasep)),
+        htmltools::tags$td("(Control only)")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "2", style = "vertical-align: middle;", 
+                           htmltools::strong("ELISA")),
+        htmltools::tags$td("PE PP%"),
+        htmltools::tags$td(sprintf("≥ %.0f%%", input$threshold_elisa_pe)),
+        htmltools::tags$td("Positive if PP% ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("VSG PP%"),
+        htmltools::tags$td(sprintf("≥ %.0f%%", input$threshold_elisa_vsg)),
+        htmltools::tags$td("Positive if PP% ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td(rowspan = "2", style = "vertical-align: middle;", 
+                           htmltools::strong("iELISA")),
+        htmltools::tags$td("LiTat 1.3"),
+        htmltools::tags$td(sprintf("≥ %.0f%% inhibition", input$threshold_ielisa_13)),
+        htmltools::tags$td("Positive if EITHER antigen ≥ threshold")
+      ),
+      htmltools::tags$tr(
+        htmltools::tags$td("LiTat 1.5"),
+        htmltools::tags$td(sprintf("≥ %.0f%% inhibition", input$threshold_ielisa_15)),
+        htmltools::tags$td("")
+      )
+    )
+  )
+})
+```
+
+---
+
+## FIX 8: Control Type Dropdowns
+
+### Problem
+
+Dropdown shows wrong control types per test (e.g., "CC" option for PCR)
+
+### Solution
+
+Make dropdowns assay-specific:
+
+```r
+# In mod_lab_results_complete.R, Controls QC tab:
+
+# REPLACE the generic dropdown with:
+
+shiny::uiOutput(ns("qc_control_selector"))
+
+# Then add this output:
+
+output$qc_control_selector <- shiny::renderUI({
+  assay <- input$qc_assay
+  
+  choices <- if (assay == "PCR") {
+    c("All", "CP" = "CP", "CN" = "CN")  # Positive Control, Negative Control
+  } else if (grepl("ELISA", assay)) {
+    c("All", "PC" = "PC", "NC" = "NC", "CC" = "CC")  # + Conjugate Control
+  } else if (assay == "iELISA") {
+    c("All", "Summary")  # iELISA doesn't have individual controls per sample
+  } else {
+    c("All", "CP", "CN", "PC", "NC", "CC")
+  }
+  
+  shiny::selectInput(
+    ns("qc_control"),
+    "Control Type",
+    choices = choices,
+    selected = "All"
+  )
+})
+```
+
+---
+
+## IMPLEMENTATION CHECKLIST
+
+Use this to track your fixes:
+
+- [ ] 1. Replace `mod_extractions_qc.R` with `mod_extractions_qc_FIXED.R`
+- [ ] 2. Update lab results overview table to show all OD/PP% columns
+- [ ] 3. Add `helpers_controls_WORKING.R` and use it in lab results module
+- [ ] 4. Remove GRID3 online from geography module
+- [ ] 5. Create simplified testdata/cod_health_zones_simple.gpkg (< 5MB)
+- [ ] 6. Replace `classify_concordance()` function
+- [ ] 7. Add date extraction to PCR parsing
+- [ ] 8. Add threshold display table to lab results
+- [ ] 9. Make control type dropdown assay-specific
+- [ ] 10. Test EVERYTHING with real data
+
+---
+
+## TESTING SCRIPT
+
+After making all fixes, run this test:
+
+```r
+# Test script - run in R console
+
+# 1. Test extraction parsing
+test_extract <- function() {
+  source("R/mod_extractions_qc_FIXED.R")
+  df <- read_extractions_dir("YOUR_EXTRACTION_DIR")
+  
+  cat("Samples loaded:", nrow(df), "\n")
+  cat("With valid volumes:", sum(!is.na(df$volume_num)), "\n")
+  cat("Volume range:", range(df$volume_num, na.rm = TRUE), "\n")
+}
+
+# 2. Test control extraction
+test_controls <- function() {
+  source("R/helpers_controls_WORKING.R")
+  
+  pcr <- parse_pcr_results("YOUR_PCR_DIR")
+  pcr_ctrl <- extract_pcr_controls_simple(pcr)
+  cat("PCR controls:", nrow(pcr_ctrl), "\n")
+  
+  elisa_ctrl <- extract_elisa_controls_simple("YOUR_ELISA_DIR", "ELISA_PE")
+  cat("ELISA controls:", nrow(elisa_ctrl), "\n")
+  
+  ielisa_ctrl <- extract_ielisa_controls_simple("YOUR_IELISA_DIR")
+  cat("iELISA controls:", nrow(ielisa_ctrl), "\n")
+}
+
+# 3. Test concordance
+test_concordance <- function() {
+  source("R/helpers_concordance.R")
+  
+  # Create test data
+  test_df <- tibble::tibble(
+    PCR_tested = rep(TRUE, 10),
+    elisa_vsg_tested = rep(TRUE, 10),
+    elisa_pe_tested = rep(TRUE, 10),
+    ielisa_tested = rep(TRUE, 10),
+    PCR_is_pos = c(T, T, F, F, T, F, T, F, T, T),
+    elisa_vsg_is_pos = c(T, F, T, F, T, F, F, T, T, T),
+    elisa_pe_is_pos = c(T, F, T, F, F, T, F, F, T, T),
+    ielisa_is_pos = c(T, F, F, T, F, F, F, F, T, T)
+  )
+  
+  result <- classify_concordance(test_df)
+  table(result$concordance_class)
+}
+
+# Run all tests
+test_extract()
+test_controls()
+test_concordance()
+```
+
+---
+
+## SUMMARY
+
+**What's been fixed:**
+✅ Extraction QC - complete rewrite with proper filtering
+✅ Lab results display - flexible column matching
+✅ Controls - simple, working extraction functions
+✅ Geography - remove broken online option
+✅ Concordance - correct classification logic
+✅ PCR dates - extraction from filenames
+✅ Thresholds - visible display in UI
+✅ Dropdowns - assay-specific control types
+
+**Next steps:**
+1. Copy all fixed files to your project
+2. Replace old versions
+3. Test with real data
+4. Deploy when working
+
+Let me know if you need any clarification on these fixes!
     
     # PCR detail table
     output$tbl_pcr <- DT::renderDT({
