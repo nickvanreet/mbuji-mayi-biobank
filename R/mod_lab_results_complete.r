@@ -152,18 +152,23 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     lab_ielisa <- shiny::reactiveVal(tibble::tibble())
 
     # Initialize paths from config
+    update_dir_input <- function(input_id, value) {
+      if (is.null(value) || !length(value)) return(invisible())
+      value <- as.character(value)[1]
+      if (is.na(value)) return(invisible())
+      value <- trimws(value)
+      if (!nzchar(value)) return(invisible())
+      shiny::updateTextInput(session, input_id, value = value)
+    }
+
     shiny::observe({
-      cfg <- config()
-      if (!is.null(cfg) && "paths" %in% names(cfg)) {
-        shiny::updateTextInput(session, "pcr_dir", 
-                               value = cfg$paths$pcr_dir)
-        shiny::updateTextInput(session, "elisa_pe_dir", 
-                               value = cfg$paths$elisa_pe_dir)
-        shiny::updateTextInput(session, "elisa_vsg_dir", 
-                               value = cfg$paths$elisa_vsg_dir)
-        shiny::updateTextInput(session, "ielisa_dir", 
-                               value = cfg$paths$ielisa_dir)
-      }
+      cfg_val <- config()
+      if (is.null(cfg_val) || !("paths" %in% names(cfg_val))) return()
+
+      update_dir_input("pcr_dir",       cfg_val$paths$pcr_dir)
+      update_dir_input("elisa_pe_dir",  cfg_val$paths$elisa_pe_dir)
+      update_dir_input("elisa_vsg_dir", cfg_val$paths$elisa_vsg_dir)
+      update_dir_input("ielisa_dir",    cfg_val$paths$ielisa_dir)
     })
     
     # Load lab results
@@ -183,6 +188,32 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       dir_elisa_pe <- lab_normalise_path(input$elisa_pe_dir)
       dir_elisa_vsg <- lab_normalise_path(input$elisa_vsg_dir)
       dir_ielisa <- lab_normalise_path(input$ielisa_dir)
+
+      # Keep the most recent non-empty directories visible in the UI/config
+      update_dir_input("pcr_dir",       dir_pcr)
+      update_dir_input("elisa_pe_dir",  dir_elisa_pe)
+      update_dir_input("elisa_vsg_dir", dir_elisa_vsg)
+      update_dir_input("ielisa_dir",    dir_ielisa)
+
+      cfg_val <- config()
+      if (is.null(cfg_val)) cfg_val <- list()
+      if (is.null(cfg_val$paths)) cfg_val$paths <- list()
+
+      persist_dir <- function(key, value) {
+        if (is.null(value) || !length(value)) return()
+        value <- as.character(value)[1]
+        if (is.na(value)) return()
+        value <- trimws(value)
+        if (!nzchar(value)) return()
+        cfg_val$paths[[key]] <<- value
+      }
+
+      persist_dir("pcr_dir",       dir_pcr)
+      persist_dir("elisa_pe_dir",  dir_elisa_pe)
+      persist_dir("elisa_vsg_dir", dir_elisa_vsg)
+      persist_dir("ielisa_dir",    dir_ielisa)
+
+      config(cfg_val)
 
       # Extract keys for joining
       keys <- bio %>%

@@ -18,6 +18,9 @@ suppressPackageStartupMessages({
   library(yaml)
 })
 
+# Allow larger uploads (e.g. shapefiles packaged as ZIP)
+options(shiny.maxRequestSize = 50 * 1024^2)
+
 # Windows locale nudge for accented folders (harmless on other OSes)
 try({
   if (.Platform$OS.type == "windows") {
@@ -483,13 +486,14 @@ server <- function(input, output, session) {
   
   output$vb_sites <- renderText({
     df <- filtered_data(); req(df)
-    structures <- df %>% dplyr::filter(!is.na(structure) & structure != "") %>% dplyr::pull(structure)
-    units      <- df %>% dplyr::filter(!is.na(unit) & unit != "") %>% dplyr::pull(unit)
-    sprintf("%s structures, %s units",
-            scales::comma(dplyr::n_distinct(structures)),
-            scales::comma(dplyr::n_distinct(units)))
+    structures <- df %>%
+      dplyr::mutate(structure = trimws(as.character(structure))) %>%
+      dplyr::filter(!is.na(structure) & nzchar(structure)) %>%
+      dplyr::filter(!grepl("^(UM|MUM)", toupper(structure))) %>%
+      dplyr::pull(structure)
+    sprintf("%s structures", scales::comma(dplyr::n_distinct(structures)))
   })
-  
+
   # Plots
   output$plot_timeline <- renderPlot({
     df <- filtered_data(); req(df)
@@ -506,19 +510,149 @@ server <- function(input, output, session) {
   output$plot_study_dist <- renderPlot({
     df <- filtered_data(); req(df)
     tab <- df %>%
-      mutate(study = ifelse(is.na(study), "Unknown", study)) %>%
-      dplyr::count(study) %>%
-      mutate(pct = n / sum(n) * 100)
+      dplyr::mutate(
+        study = as.character(study),
+        study = dplyr::case_when(
+          is.na(study) | !nzchar(study) ~ "Unknown",
+          study %in% c("DA", "DP") ~ study,
+          TRUE ~ "Other"
+        ),
+        study = factor(study, levels = c("DA", "DP", "Other", "Unknown"))
+      ) %>%
+      dplyr::count(study, name = "n")
+
+    shiny::validate(shiny::need(nrow(tab) > 0, "No samples available for study distribution."))
+
+    total <- sum(tab$n)
+    tab <- tab %>%
+      dplyr::mutate(pct = if (total > 0) n / total * 100 else 0)
+
+    fill_values <- c(
+      DA = "#3498DB",
+      DP = "#27AE60",
+      Other = "#8E44AD",
+      Unknown = "#95A5A6"
+    )
+
     ggplot(tab, aes(x = "", y = n, fill = study)) +
-      geom_col(width = 1, color = "white", size = 2) +
-      geom_text(aes(label = sprintf("%s\n%.1f%%", scales::comma(n), pct)),
-                position = position_stack(vjust = 0.5),
-                color = "white", fontface = "bold", size = 5) +
+      geom_col(width = 1, color = "white", size = 1.2) +
+      geom_text(
+        data = dplyr::filter(tab, n > 0),
+        aes(label = sprintf("%s\n%.1f%%", scales::comma(n), pct)),
+        position = position_stack(vjust = 0.5),
+        color = "white", fontface = "bold", size = 4
+      ) +
       coord_polar("y") +
-      scale_fill_manual(values = c(DA = "#3498DB", DP = "#27AE60", Unknown = "grey70")) +
-      theme_void() + theme(legend.position = "right")
+      scale_fill_manual(values = fill_values, drop = FALSE) +
+      labs(fill = "Study") +
+      theme_void() +
+      theme(legend.position = "right")
   })
-  
+
+  output$plot_pyramid <- renderPlot({
+    df <- filtered_data(); req(df)
+
+    shiny::validate(
+      shiny::need("zone" %in% names(df), "Zone information is missing."),
+      shiny::need("sex" %in% names(df), "Sex information is missing."),
+      shiny::need("age_num" %in% names(df), "Age data is missing.")
+    )
+
+    df <- df %>%
+      dplyr::mutate(
+        zone = trimws(as.character(zone)),
+        sex = as.character(sex),
+        age_num = suppressWarnings(as.numeric(age_num))
+      ) %>%
+      dplyr::filter(
+        !is.na(zone) & nzchar(zone),
+        sex %in% c("M", "F"),
+        !is.na(age_num)
+      )
+
+    shiny::validate(shiny::need(nrow(df) > 0, "No age/sex data available for the selected filters."))
+
+    min_n_input <- input$pyramid_min_n
+    if (is.null(min_n_input) || !is.numeric(min_n_input) || min_n_input < 1) {
+      min_n <- 1
+    } else {
+      min_n <- floor(min_n_input)
+    }
+    zones_keep <- df %>% dplyr::count(zone, name = "n") %>% dplyr::filter(n >= min_n) %>% dplyr::pull(zone)
+
+    shiny::validate(shiny::need(length(zones_keep) > 0, "Not enough samples per zone to draw the pyramid."))
+
+    age_width_input <- input$pyramid_age_width
+    if (is.null(age_width_input) || !is.numeric(age_width_input) || age_width_input < 1) {
+      age_width <- 5
+    } else {
+      age_width <- floor(age_width_input)
+    }
+
+    df <- df %>%
+      dplyr::filter(zone %in% zones_keep) %>%
+      dplyr::mutate(
+        age_group = make_age_groups(age_num, width = age_width),
+        sex_label = dplyr::recode(sex, M = "Male", F = "Female"),
+        structure_label = if (isTRUE(input$pyramid_by_structure) && "structure" %in% names(.)) {
+          structure_clean <- trimws(as.character(structure))
+          structure_clean[is.na(structure_clean) | !nzchar(structure_clean)] <- "Unknown structure"
+          structure_clean
+        } else {
+          ""
+        },
+        study_label = if (isTRUE(input$pyramid_split_study) && "study" %in% names(.)) {
+          study_clean <- as.character(study)
+          study_clean[is.na(study_clean) | !nzchar(study_clean)] <- "Unknown study"
+          study_clean
+        } else {
+          ""
+        }
+      )
+
+    shiny::validate(shiny::need(!all(is.na(df$age_group)), "Unable to form age groups with the current data."))
+
+    df <- df %>% dplyr::filter(!is.na(age_group))
+
+    df <- df %>%
+      dplyr::mutate(
+        facet_label = zone,
+        facet_label = ifelse(nzchar(structure_label), paste0(facet_label, " • ", structure_label), facet_label),
+        facet_label = ifelse(nzchar(study_label), paste0(facet_label, "\n", study_label), facet_label)
+      )
+
+    summary_cols <- c("facet_label", "age_group", "sex_label")
+    summary_df <- df %>%
+      dplyr::group_by(dplyr::across(all_of(summary_cols))) %>%
+      dplyr::summarise(n = dplyr::n(), .groups = "drop")
+
+    shiny::validate(shiny::need(nrow(summary_df) > 0, "No samples remain after applying the pyramid settings."))
+
+    plot_df <- summary_df %>%
+      dplyr::mutate(
+        count = dplyr::if_else(sex_label == "Male", -n, n),
+        facet_label = factor(facet_label, levels = unique(facet_label))
+      )
+
+    max_count <- max(abs(plot_df$count))
+    if (!is.finite(max_count) || max_count <= 0) {
+      max_count <- max(summary_df$n)
+    }
+    if (!is.finite(max_count) || max_count <= 0) {
+      max_count <- 1
+    }
+
+    ggplot(plot_df, aes(x = age_group, y = count, fill = sex_label)) +
+      geom_col(width = 0.9) +
+      coord_flip() +
+      facet_wrap(~ facet_label, scales = "free_y") +
+      scale_y_continuous(labels = abs, limits = c(-max_count, max_count)) +
+      scale_fill_manual(values = c("Male" = "#3498DB", "Female" = "#E91E63")) +
+      labs(x = "Age group", y = "Sample count", fill = "Sex") +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom")
+  })
+
   # Tables
   output$table_demographics <- renderTable({
     df <- filtered_data(); req(df)
