@@ -1,6 +1,7 @@
 # mod_lab_results_complete.R
 # =====================================================================
-# MODULE: Lab Results — Complete with Overview, Details, Controls, Search
+# MODULE: Lab Results — Complete with all fixes
+# UPDATED: 2025-11-03 with canonical calls, deduplication, and Controls QC
 # =====================================================================
 
 #' Lab Results Module - UI
@@ -146,24 +147,57 @@ mod_lab_results_ui <- function(id) {
           DT::DTOutput(ns("tbl_concordance"))
         ),
         
-        # === CONTROLS TAB ===
+        # === CONTROLS QC TAB (NEW) ===
         bslib::nav_panel(
-          "Controls / QC",
+          "Controls QC",
           
-          shiny::h5("PCR Controls"),
-          DT::DTOutput(ns("qc_pcr")),
-          shiny::hr(),
-          
-          shiny::h5("ELISA PE Controls"),
-          DT::DTOutput(ns("qc_elisa_pe")),
-          shiny::hr(),
-          
-          shiny::h5("ELISA VSG Controls"),
-          DT::DTOutput(ns("qc_elisa_vsg")),
-          shiny::hr(),
-          
-          shiny::h5("iELISA Controls"),
-          DT::DTOutput(ns("qc_ielisa"))
+          bslib::layout_columns(
+            col_widths = c(3, 9),
+            
+            # Filters
+            bslib::card(
+              bslib::card_header("QC Filters"),
+              shiny::selectInput(
+                ns("qc_assay"),
+                "Assay",
+                choices = c("All", "PCR", "ELISA_PE", "ELISA_VSG", "iELISA"),
+                selected = "All"
+              ),
+              shiny::selectInput(
+                ns("qc_control"),
+                "Control Type",
+                choices = c("All", "PC", "NC", "CC"),
+                selected = "All"
+              ),
+              shiny::checkboxInput(
+                ns("qc_flag_outliers"),
+                "Flag outliers (±2 SD)",
+                value = TRUE
+              ),
+              shiny::hr(),
+              shiny::downloadButton(ns("dl_controls"), "Download Controls", 
+                                    class = "btn-sm w-100")
+            ),
+            
+            # Results
+            bslib::card(
+              bslib::card_header("Control Performance"),
+              bslib::navset_tab(
+                bslib::nav_panel(
+                  "Summary",
+                  DT::DTOutput(ns("qc_controls_summary"))
+                ),
+                bslib::nav_panel(
+                  "Levey-Jennings Chart",
+                  shiny::plotOutput(ns("qc_lj_plot"), height = 500)
+                ),
+                bslib::nav_panel(
+                  "Raw Data",
+                  DT::DTOutput(ns("qc_controls_raw"))
+                )
+              )
+            )
+          )
         )
       )
     )
@@ -177,6 +211,14 @@ mod_lab_results_ui <- function(id) {
 #' @export
 mod_lab_results_server <- function(id, biobank_clean, config) {
   shiny::moduleServer(id, function(input, output, session) {
+    
+    # Ensure helpers are loaded
+    if (!exists("canonicalise_call")) {
+      source("R/helpers_lab_results2.R", local = TRUE)
+    }
+    if (!exists("merge_lab_with_biobank_v2")) {
+      source("R/helpers_lab_merge.R", local = TRUE)
+    }
     
     # Reactive values
     lab_data_raw <- shiny::reactiveVal(list(
@@ -192,14 +234,21 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     shiny::observe({
       cfg <- config()
       if (!is.null(cfg) && "paths" %in% names(cfg)) {
-        shiny::updateTextInput(session, "pcr_dir", 
-                               value = safe_path(cfg$paths$pcr_dir))
-        shiny::updateTextInput(session, "elisa_pe_dir", 
-                               value = safe_path(cfg$paths$elisa_pe_dir))
-        shiny::updateTextInput(session, "elisa_vsg_dir", 
-                               value = safe_path(cfg$paths$elisa_vsg_dir))
-        shiny::updateTextInput(session, "ielisa_dir", 
-                               value = safe_path(cfg$paths$ielisa_dir))
+        if (exists("safe_path")) {
+          shiny::updateTextInput(session, "pcr_dir", 
+                                 value = safe_path(cfg$paths$pcr_dir))
+          shiny::updateTextInput(session, "elisa_pe_dir", 
+                                 value = safe_path(cfg$paths$elisa_pe_dir))
+          shiny::updateTextInput(session, "elisa_vsg_dir", 
+                                 value = safe_path(cfg$paths$elisa_vsg_dir))
+          shiny::updateTextInput(session, "ielisa_dir", 
+                                 value = safe_path(cfg$paths$ielisa_dir))
+        } else {
+          shiny::updateTextInput(session, "pcr_dir", value = cfg$paths$pcr_dir)
+          shiny::updateTextInput(session, "elisa_pe_dir", value = cfg$paths$elisa_pe_dir)
+          shiny::updateTextInput(session, "elisa_vsg_dir", value = cfg$paths$elisa_vsg_dir)
+          shiny::updateTextInput(session, "ielisa_dir", value = cfg$paths$ielisa_dir)
+        }
       }
     })
     
@@ -221,7 +270,15 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         # Load PCR
         shiny::incProgress(0.25, detail = "Loading PCR...")
         pcr_data <- tryCatch({
-          parse_pcr_results(input$pcr_dir)
+          dat <- parse_pcr_results(input$pcr_dir)
+          # Verify structure
+          if (nrow(dat) > 0) {
+            if (!"lab_id" %in% names(dat)) {
+              warning("PCR data missing lab_id column")
+              dat$lab_id <- NA_character_
+            }
+          }
+          dat
         }, error = function(e) {
           errors <<- c(errors, paste("PCR:", e$message))
           tibble::tibble()
@@ -231,7 +288,16 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         # Load ELISA PE
         shiny::incProgress(0.25, detail = "Loading ELISA PE...")
         elisa_pe_data <- tryCatch({
-          parse_elisa_pe(input$elisa_pe_dir)
+          dat <- parse_elisa_pe(input$elisa_pe_dir)
+          if (nrow(dat) > 0) {
+            required <- c("lab_id", "barcode")
+            missing <- required[!required %in% names(dat)]
+            if (length(missing)) {
+              warning("ELISA PE missing columns: ", paste(missing, collapse = ", "))
+              for (col in missing) dat[[col]] <- NA_character_
+            }
+          }
+          dat
         }, error = function(e) {
           errors <<- c(errors, paste("ELISA PE:", e$message))
           tibble::tibble()
@@ -241,7 +307,16 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         # Load ELISA VSG
         shiny::incProgress(0.25, detail = "Loading ELISA VSG...")
         elisa_vsg_data <- tryCatch({
-          parse_elisa_vsg(input$elisa_vsg_dir)
+          dat <- parse_elisa_vsg(input$elisa_vsg_dir)
+          if (nrow(dat) > 0) {
+            required <- c("lab_id", "barcode")
+            missing <- required[!required %in% names(dat)]
+            if (length(missing)) {
+              warning("ELISA VSG missing columns: ", paste(missing, collapse = ", "))
+              for (col in missing) dat[[col]] <- NA_character_
+            }
+          }
+          dat
         }, error = function(e) {
           errors <<- c(errors, paste("ELISA VSG:", e$message))
           tibble::tibble()
@@ -251,7 +326,17 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         # Load iELISA
         shiny::incProgress(0.25, detail = "Loading iELISA...")
         ielisa_data <- tryCatch({
-          parse_ielisa(input$ielisa_dir)
+          dat <- parse_ielisa(input$ielisa_dir)
+          # Standardize column names
+          if (nrow(dat) > 0) {
+            if ("LabID" %in% names(dat) && !"lab_id" %in% names(dat)) {
+              dat <- dat %>% dplyr::rename(lab_id = LabID)
+            }
+            if ("Barcode" %in% names(dat) && !"barcode" %in% names(dat)) {
+              dat <- dat %>% dplyr::rename(barcode = Barcode)
+            }
+          }
+          dat
         }, error = function(e) {
           errors <<- c(errors, paste("iELISA:", e$message))
           tibble::tibble()
@@ -274,7 +359,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         lab_status(status_msg)
         
         total_loaded <- nrow(pcr_data) + nrow(elisa_pe_data) + 
-                        nrow(elisa_vsg_data) + nrow(ielisa_data)
+          nrow(elisa_vsg_data) + nrow(ielisa_data)
         
         if (total_loaded > 0) {
           shiny::showNotification(
@@ -306,7 +391,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       shiny::updateTextInput(session, "barcode_search", value = "")
     })
     
-    # Merged and flagged data
+    # Merged and flagged data (UPDATED WITH CANONICAL CALLS)
     joined_data <- shiny::reactive({
       bio <- biobank_clean()
       lab <- lab_data_raw()
@@ -314,53 +399,20 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       if (is.null(bio) || !nrow(bio)) return(tibble::tibble())
       
       tryCatch({
-        merged <- merge_lab_with_biobank(bio, lab)
+        # Use corrected merge function with canonical calls
+        merged <- merge_lab_with_biobank_v2(bio, lab)
         
-        # Use separate thresholds for PE and VSG
-        flagged <- merged %>%
-          dplyr::mutate(
-            # PCR positive
-            PCR_pos_call = grepl("pos|detect", tolower(pcr_call)),
-            PCR_pos_cq = !is.na(Cq_177T) & Cq_177T <= input$threshold_pcr | 
-                         !is.na(Cq_18S2) & Cq_18S2 <= input$threshold_pcr,
-            PCR_pos = dplyr::coalesce(PCR_pos_call, PCR_pos_cq),
-            
-            # ELISA PE positive (using PE-specific threshold)
-            ELISA_PE_pos = !is.na(pp_percent_pe) & pp_percent_pe >= input$threshold_elisa_pe,
-            
-            # ELISA VSG positive (using VSG-specific threshold)
-            ELISA_VSG_pos = !is.na(pp_percent_vsg) & pp_percent_vsg >= input$threshold_elisa_vsg,
-            
-            # iELISA positive
-            iELISA_pos_numeric = !is.na(pct_inh_13) & pct_inh_13 >= input$threshold_ielisa |
-                                 !is.na(pct_inh_15) & pct_inh_15 >= input$threshold_ielisa,
-            iELISA_pos_text = grepl("pos|positif|detect", 
-                                    paste(res_13, res_15, res_final), 
-                                    ignore.case = TRUE),
-            iELISA_pos = iELISA_pos_numeric | iELISA_pos_text,
-            
-            # Any positive
-            Any_pos = PCR_pos | ELISA_PE_pos | ELISA_VSG_pos | iELISA_pos,
-            
-            # Concordance
-            Tested_count = sum(!is.na(PCR_pos), !is.na(ELISA_PE_pos), 
-                               !is.na(ELISA_VSG_pos), !is.na(iELISA_pos)),
-            Pos_count = sum(PCR_pos %in% TRUE, ELISA_PE_pos %in% TRUE,
-                            ELISA_VSG_pos %in% TRUE, iELISA_pos %in% TRUE),
-            
-            Concordant = dplyr::case_when(
-              Tested_count == 0 ~ NA,
-              Pos_count == 0 ~ TRUE,
-              Pos_count == Tested_count ~ TRUE,
-              TRUE ~ FALSE
-            )
-          ) %>%
-          dplyr::select(-PCR_pos_call, -PCR_pos_cq, -iELISA_pos_numeric, 
-                        -iELISA_pos_text, -Tested_count, -Pos_count)
+        # Merge function already adds canonical calls and is_pos flags
+        # Just return it
+        merged
         
-        flagged
       }, error = function(e) {
         warning("Failed to merge lab data: ", e$message)
+        shiny::showNotification(
+          paste("Lab merge error:", e$message),
+          type = "error",
+          duration = 10
+        )
         tibble::tibble()
       })
     })
@@ -376,14 +428,14 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         df <- df %>%
           dplyr::filter(
             grepl(search_clean, toupper(barcode), fixed = TRUE) |
-            grepl(search_clean, toupper(lab_id), fixed = TRUE)
+              grepl(search_clean, toupper(lab_id), fixed = TRUE)
           )
       }
       
       df
     })
     
-    # === VALUE BOXES ===
+    # === VALUE BOXES (UPDATED TO USE CANONICAL FLAGS) ===
     
     output$vb_total_tested <- shiny::renderText({
       df <- joined_data()
@@ -392,8 +444,8 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       n_tested <- df %>%
         dplyr::filter(
           !is.na(Cq_177T) | !is.na(Cq_18S2) | 
-          !is.na(pp_percent_pe) | !is.na(pp_percent_vsg) |
-          !is.na(pct_inh_13) | !is.na(pct_inh_15)
+            !is.na(pp_percent_pe) | !is.na(pp_percent_vsg) |
+            !is.na(pct_inh_13) | !is.na(pct_inh_15)
         ) %>%
         nrow()
       
@@ -403,27 +455,38 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     output$vb_pcr_pos <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
-      n_pos <- sum(df$PCR_pos %in% TRUE, na.rm = TRUE)
-      n_tested <- sum(!is.na(df$Cq_177T) | !is.na(df$Cq_18S2))
+      
+      # Use canonical flag
+      n_pos <- sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE)
+      n_tested <- sum(!is.na(df$PCR_call))
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
     
     output$vb_elisa_pos <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
-      n_pos <- sum(df$ELISA_PE_pos %in% TRUE | df$ELISA_VSG_pos %in% TRUE, na.rm = TRUE)
-      n_tested <- sum(!is.na(df$pp_percent_pe) | !is.na(df$pp_percent_vsg))
+      
+      # Any ELISA positive
+      n_pos <- sum(
+        (df$elisa_pe_is_pos | df$elisa_vsg_is_pos) %||% FALSE, 
+        na.rm = TRUE
+      )
+      n_tested <- sum(!is.na(df$elisa_pe_call) | !is.na(df$elisa_vsg_call))
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
     
     output$vb_ielisa_pos <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
-      n_pos <- sum(df$iELISA_pos %in% TRUE, na.rm = TRUE)
-      n_tested <- sum(!is.na(df$pct_inh_13) | !is.na(df$pct_inh_15))
+      
+      n_pos <- sum(df$ielisa_is_pos %||% FALSE, na.rm = TRUE)
+      n_tested <- sum(!is.na(df$ielisa_call))
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
     
@@ -446,10 +509,10 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
           sum(!is.na(df$pct_inh_13) | !is.na(df$pct_inh_15))
         ),
         `Positive Results` = c(
-          sum(df$PCR_pos %in% TRUE, na.rm = TRUE),
-          sum(df$ELISA_PE_pos %in% TRUE, na.rm = TRUE),
-          sum(df$ELISA_VSG_pos %in% TRUE, na.rm = TRUE),
-          sum(df$iELISA_pos %in% TRUE, na.rm = TRUE)
+          sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_pe_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_vsg_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$ielisa_is_pos %||% FALSE, na.rm = TRUE)
         )
       ) %>%
         dplyr::mutate(
@@ -474,7 +537,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         )
     })
     
-    # Overview table with detailed values
+    # Overview table with canonical flags
     output$tbl_overview <- DT::renderDT({
       df <- filtered_data()
       
@@ -486,33 +549,41 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         dplyr::select(
           barcode, lab_id,
           # PCR
-          PCR_Call = pcr_call,
+          PCR_Call = PCR_call,
           `177T Cq` = Cq_177T,
           `18S2 Cq` = Cq_18S2,
           `RNAseP Cq` = Cq_RNAseP,
-          PCR_Status = PCR_pos,
+          PCR_Status = PCR_is_pos,
           # ELISA PE
           `PE OD` = d_od_pe,
           `PE PP%` = pp_percent_pe,
-          PE_Status = ELISA_PE_pos,
+          PE_Status = elisa_pe_is_pos,
           # ELISA VSG
           `VSG OD` = d_od_vsg,
           `VSG PP%` = pp_percent_vsg,
-          VSG_Status = ELISA_VSG_pos,
+          VSG_Status = elisa_vsg_is_pos,
           # iELISA
           `iELISA 1.3%` = pct_inh_13,
           `iELISA 1.5%` = pct_inh_15,
-          iELISA_Status = iELISA_pos,
+          iELISA_Status = ielisa_is_pos,
           # Overall
+          Any_Positive = Any_pos,
           Concordant
         ) %>%
         dplyr::mutate(
-          dplyr::across(c(PCR_Status, PE_Status, VSG_Status, iELISA_Status, Concordant),
-                        ~dplyr::case_when(
-                          . == TRUE ~ "POS",
-                          . == FALSE ~ "NEG",
-                          TRUE ~ "NA"
-                        ))
+          dplyr::across(
+            c(PCR_Status, PE_Status, VSG_Status, iELISA_Status, Any_Positive),
+            ~dplyr::case_when(
+              . == TRUE ~ "POS",
+              . == FALSE ~ "NEG",
+              TRUE ~ "NA"
+            )
+          ),
+          Concordant = dplyr::case_when(
+            Concordant == TRUE ~ "YES",
+            Concordant == FALSE ~ "NO",
+            TRUE ~ "NA"
+          )
         )
       
       DT::datatable(
@@ -532,7 +603,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
                                     "iELISA 1.3%", "iELISA 1.5%"),
                         digits = 2) %>%
         DT::formatStyle(
-          c("PCR_Status", "PE_Status", "VSG_Status", "iELISA_Status"),
+          c("PCR_Status", "PE_Status", "VSG_Status", "iELISA_Status", "Any_Positive"),
           backgroundColor = DT::styleEqual(
             c("POS", "NEG", "NA"),
             c("#f8d7da", "#d4edda", "#e2e3e5")
@@ -541,7 +612,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         DT::formatStyle(
           "Concordant",
           backgroundColor = DT::styleEqual(
-            c("POS", "NEG", "NA"),
+            c("YES", "NO", "NA"),
             c("#d4edda", "#fff3cd", "#e2e3e5")
           )
         )
@@ -628,19 +699,19 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       concordance_details <- df %>%
         dplyr::mutate(
           PCR = dplyr::case_when(
-            PCR_pos ~ "POS",
-            is.na(PCR_pos) ~ "Not Tested",
-            TRUE ~ "NEG"
+            PCR_is_pos ~ "POS",
+            !is.na(PCR_call) & !PCR_is_pos ~ "NEG",
+            TRUE ~ "Not Tested"
           ),
           ELISA = dplyr::case_when(
-            ELISA_PE_pos | ELISA_VSG_pos ~ "POS",
-            is.na(ELISA_PE_pos) & is.na(ELISA_VSG_pos) ~ "Not Tested",
-            TRUE ~ "NEG"
+            elisa_pe_is_pos | elisa_vsg_is_pos ~ "POS",
+            !is.na(elisa_pe_call) | !is.na(elisa_vsg_call) ~ "NEG",
+            TRUE ~ "Not Tested"
           ),
           iELISA = dplyr::case_when(
-            iELISA_pos ~ "POS",
-            is.na(iELISA_pos) ~ "Not Tested",
-            TRUE ~ "NEG"
+            ielisa_is_pos ~ "POS",
+            !is.na(ielisa_call) & !ielisa_is_pos ~ "NEG",
+            TRUE ~ "Not Tested"
           )
         ) %>%
         dplyr::select(barcode, lab_id, PCR, ELISA, iELISA, Concordant) %>%
@@ -702,10 +773,10 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
           sum(!is.na(df$pct_inh_13) | !is.na(df$pct_inh_15))
         ),
         Positive = c(
-          sum(df$PCR_pos %in% TRUE, na.rm = TRUE),
-          sum(df$ELISA_PE_pos %in% TRUE, na.rm = TRUE),
-          sum(df$ELISA_VSG_pos %in% TRUE, na.rm = TRUE),
-          sum(df$iELISA_pos %in% TRUE, na.rm = TRUE)
+          sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_pe_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_vsg_is_pos %||% FALSE, na.rm = TRUE),
+          sum(df$ielisa_is_pos %||% FALSE, na.rm = TRUE)
         )
       ) %>%
         dplyr::mutate(
@@ -717,38 +788,121 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         )
     }, striped = TRUE, hover = TRUE)
     
-    # === QC TABLES ===
+    # === CONTROLS QC (NEW SECTION) ===
     
-    output$qc_pcr <- DT::renderDT({
+    # Extract controls from lab data
+    controls_data <- shiny::reactive({
+      lab <- lab_data_raw()
+      
+      if (is.null(lab)) return(tibble::tibble())
+      
+      # Combine all lab data for control extraction
+      all_labs <- dplyr::bind_rows(
+        if (nrow(lab$pcr) > 0) lab$pcr %>% dplyr::mutate(assay_label = "PCR") else NULL,
+        if (nrow(lab$elisa_pe) > 0) lab$elisa_pe %>% dplyr::mutate(assay_label = "ELISA_PE") else NULL,
+        if (nrow(lab$elisa_vsg) > 0) lab$elisa_vsg %>% dplyr::mutate(assay_label = "ELISA_VSG") else NULL,
+        if (nrow(lab$ielisa) > 0) lab$ielisa %>% dplyr::mutate(assay_label = "iELISA") else NULL
+      )
+      
+      if (is.null(all_labs) || !nrow(all_labs)) return(tibble::tibble())
+      
+      extract_controls(all_labs)
+    })
+    
+    # Filter controls
+    controls_filtered <- shiny::reactive({
+      controls <- controls_data()
+      shiny::req(controls, nrow(controls) > 0)
+      
+      if (!identical(input$qc_assay, "All")) {
+        controls <- controls %>% dplyr::filter(assay == input$qc_assay)
+      }
+      
+      if (!identical(input$qc_control, "All")) {
+        controls <- controls %>% dplyr::filter(control_type == input$qc_control)
+      }
+      
+      controls
+    })
+    
+    # QC bounds
+    qc_bounds <- shiny::reactive({
+      calculate_qc_bounds(controls_data())
+    })
+    
+    # Controls summary table
+    output$qc_controls_summary <- DT::renderDT({
+      bounds <- qc_bounds()
+      
+      if (!nrow(bounds)) {
+        return(DT::datatable(tibble::tibble(Message = "No control data available")))
+      }
+      
       DT::datatable(
-        parse_pcr_controls(input$pcr_dir),
-        options = list(pageLength = 10),
+        bounds %>%
+          dplyr::mutate(
+            Mean = round(metric, 3),
+            SD = round(sdv, 3),
+            CV = round(sdv / metric * 100, 1),
+            `±2 SD Range` = sprintf("[%.3f, %.3f]", 
+                                    metric - 2*sdv, 
+                                    metric + 2*sdv)
+          ) %>%
+          dplyr::select(Assay = assay, Control = control_type, 
+                        N = n, Mean, SD, CV, `±2 SD Range`),
+        options = list(pageLength = 20),
         rownames = FALSE
       )
     })
     
-    output$qc_elisa_pe <- DT::renderDT({
-      DT::datatable(
-        parse_elisa_pe_controls(input$elisa_pe_dir),
-        options = list(pageLength = 10),
-        rownames = FALSE
-      )
+    # Levey-Jennings plot
+    output$qc_lj_plot <- shiny::renderPlot({
+      controls <- controls_filtered()
+      shiny::req(controls, nrow(controls) > 0)
+      
+      # If multiple assay/control combinations, create grid
+      combos <- controls %>%
+        dplyr::distinct(assay, control_type)
+      
+      if (nrow(combos) == 1) {
+        # Single plot
+        plot_controls_lj(controls)
+      } else if (nrow(combos) <= 6) {
+        # Grid of plots (if patchwork available)
+        if (requireNamespace("patchwork", quietly = TRUE)) {
+          plots <- controls %>%
+            dplyr::group_by(assay, control_type) %>%
+            dplyr::group_split() %>%
+            purrr::map(plot_controls_lj)
+          patchwork::wrap_plots(plots, ncol = 2)
+        } else {
+          # Just plot first combo
+          controls %>%
+            dplyr::filter(assay == combos$assay[1], 
+                          control_type == combos$control_type[1]) %>%
+            plot_controls_lj()
+        }
+      } else {
+        # Too many combos, plot first
+        controls %>%
+          dplyr::filter(assay == combos$assay[1], 
+                        control_type == combos$control_type[1]) %>%
+          plot_controls_lj()
+      }
     })
     
-    output$qc_elisa_vsg <- DT::renderDT({
+    # Raw controls data
+    output$qc_controls_raw <- DT::renderDT({
+      controls <- controls_filtered()
+      shiny::req(controls)
+      
       DT::datatable(
-        parse_elisa_vsg_controls(input$elisa_vsg_dir),
-        options = list(pageLength = 10),
+        controls,
+        options = list(pageLength = 25, scrollX = TRUE),
+        filter = "top",
         rownames = FALSE
-      )
-    })
-    
-    output$qc_ielisa <- DT::renderDT({
-      DT::datatable(
-        parse_ielisa_controls(input$ielisa_dir),
-        options = list(pageLength = 10),
-        rownames = FALSE
-      )
+      ) %>%
+        DT::formatRound(columns = c("od", "cq"), digits = 3)
     })
     
     # === DOWNLOADS ===
@@ -783,9 +937,19 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       content = function(file) readr::write_csv(joined_data(), file)
     )
     
+    output$dl_controls <- shiny::downloadHandler(
+      filename = function() paste0("controls_qc_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+      content = function(file) readr::write_csv(controls_data(), file)
+    )
+    
     # Return joined data for use by other modules (e.g., map)
     return(list(
       lab_joined = joined_data
     ))
   })
+}
+
+# Safe NULL coalesce operator
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
 }
