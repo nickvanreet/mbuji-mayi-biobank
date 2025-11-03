@@ -137,7 +137,9 @@ source("R/mod_geo_map_complete.R", local = TRUE)
 source("R/mod_extractions_complete.R", local = TRUE)
 source("R/helpers_concordance.R", local = TRUE)   # NEW
 source("R/helpers_dates.R", local = TRUE)         # NEW
+source("R/helpers_controls.R", local = TRUE)
 
+                         
 # --- HELPERS FOR THIS APP ----------------------------------------------------
 clean_biobank_data <- function(df) {
   if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(tibble())
