@@ -30,25 +30,43 @@ safe_path <- function(p) {
   if (is.null(p) || !length(p)) return(p)
   if (length(p) > 1) p <- paste(p, collapse = "")
   if (is.na(p)) return(NA_character_)
-  if (!nzchar(p)) return(p)
 
-  p0 <- enc2native(p)
-  p0 <- trimws(gsub("[\r\n]+", "", p0))
-  p1 <- normalizePath(p0, winslash = "/", mustWork = FALSE)
-  if (dir.exists(p1) || file.exists(p1)) return(p1)
-  
-  sp <- try(utils::shortPathName(p0), silent = TRUE)   # 8.3 fallback
-  if (!inherits(sp, "try-error") && nzchar(sp)) {
-    sp1 <- normalizePath(sp, winslash = "/", mustWork = FALSE)
-    if (dir.exists(sp1) || file.exists(sp1)) return(sp1)
+  p_clean <- trimws(gsub("[\r\n]+", "", p))
+  if (!nzchar(p_clean)) return(p_clean)
+
+  # If the raw value already resolves on this system, keep it.
+  if (isTRUE(dir.exists(p_clean)) || isTRUE(file.exists(p_clean))) {
+    p_norm <- tryCatch(normalizePath(p_clean, winslash = "/", mustWork = FALSE),
+                      error = function(e) p_clean)
+    if (length(p_norm) == 1 && nzchar(p_norm)) return(p_norm)
+    return(p_clean)
   }
-  
-  if (.Platform$OS.type == "windows") {                # \\?\ UNC fallback
-    unc <- paste0("\\\\?\\", gsub("/", "\\\\", p0))
-    unc1 <- normalizePath(unc, winslash = "/", mustWork = FALSE)
-    if (dir.exists(unc1) || file.exists(unc1)) return(unc1)
+
+  # Convert to native encoding, but fall back to the original if it fails.
+  p_native <- tryCatch(enc2native(p_clean), error = function(e) p_clean)
+  if (length(p_native) != 1 || is.na(p_native) || !nzchar(p_native)) {
+    p_native <- p_clean
   }
-  p0  # return cleaned original so we can report issues
+
+  p_norm <- tryCatch(normalizePath(p_native, winslash = "/", mustWork = FALSE),
+                     error = function(e) p_native)
+  if (isTRUE(dir.exists(p_norm)) || isTRUE(file.exists(p_norm))) return(p_norm)
+
+  sp <- try(utils::shortPathName(p_native), silent = TRUE)
+  if (!inherits(sp, "try-error") && length(sp) == 1 && nzchar(sp)) {
+    sp_norm <- tryCatch(normalizePath(sp, winslash = "/", mustWork = FALSE),
+                        error = function(e) sp)
+    if (isTRUE(dir.exists(sp_norm)) || isTRUE(file.exists(sp_norm))) return(sp_norm)
+  }
+
+  if (.Platform$OS.type == "windows") {
+    unc <- paste0("\\\\?\\", gsub("/", "\\\\", p_native))
+    unc_norm <- tryCatch(normalizePath(unc, winslash = "/", mustWork = FALSE),
+                         error = function(e) unc)
+    if (isTRUE(dir.exists(unc_norm)) || isTRUE(file.exists(unc_norm))) return(unc_norm)
+  }
+
+  p_clean
 }
 
 # --- CONFIG LOADER -----------------------------------------------------------
