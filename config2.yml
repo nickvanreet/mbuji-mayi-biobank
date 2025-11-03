@@ -1,0 +1,108 @@
+# --- deps ----------------------------------------------------------------
+library(yaml)
+library(purrr)
+library(rlang)
+library(fs)
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+# Deep-merge two lists (b overrides a)
+list_deep_merge <- function(a, b) {
+  for (nm in names(b)) {
+    if (is.list(b[[nm]]) && !is.null(a[[nm]]) && is.list(a[[nm]])) {
+      a[[nm]] <- list_deep_merge(a[[nm]], b[[nm]])
+    } else {
+      a[[nm]] <- b[[nm]]
+    }
+  }
+  a
+}
+
+# Normalize a single path safely (keeps relative if file doesn't exist yet)
+norm_path <- function(p) {
+  if (is.null(p) || !nzchar(p)) return(p)
+  p <- enc2utf8(path_expand(p))
+  tryCatch(
+    normalizePath(p, winslash = "/", mustWork = FALSE),
+    error = function(...) p
+  )
+}
+
+# Apply norm_path to all entries in paths
+normalize_paths <- function(cfg) {
+  if (!is.list(cfg$paths)) return(cfg)
+  cfg$paths <- lapply(cfg$paths, norm_path)
+  cfg
+}
+
+# Minimal schema validation (stop early with clear message)
+validate_config <- function(cfg) {
+  required_paths <- c("biobank_dir","extractions_dir","pcr_dir",
+                      "elisa_pe_dir","elisa_vsg_dir","ielisa_dir")
+  miss <- setdiff(required_paths, names(cfg$paths %||% list()))
+  if (length(miss)) abort(paste0("Missing in config.yml: paths.", paste(miss, collapse = ", ")))
+
+  req_map <- c("use_grid3_online","grid3_url","province_field_regex","zone_field_regex")
+  miss_map <- setdiff(req_map, names(cfg$map %||% list()))
+  if (length(miss_map)) abort(paste0("Missing in config.yml: map.", paste(miss_map, collapse = ", ")))
+
+  cfg
+}
+
+# Defaults (used when keys are absent from YAML)
+default_config <- function() {
+  list(
+    paths = list(
+      biobank_dir   = "data/biobank",
+      extractions_dir = "data/extractions",
+      pcr_dir         = "data/pcr",
+      elisa_pe_dir    = "data/elisa_pe",
+      elisa_vsg_dir   = "data/elisa_vsg",
+      ielisa_dir      = "data/ielisa"
+    ),
+    map = list(
+      use_grid3_online = TRUE,
+      grid3_url = "https://services3.arcgis.com/BU6Aadhn6tbBEdyk/arcgis/rest/services/GRID3_COD_health_zones_v7_0/FeatureServer/0/query?where=1%3D1&outFields=province,zonesante&outSR=4326&f=geojson",
+      province_field_regex = "(?i)prov",
+      zone_field_regex = "(?i)zone|zs|zonesante",
+      fallback_shapefile = "testdata/cod_health_zones.gpkg"
+    ),
+    qc = list(
+      drs_target_ml = 2.0,
+      drs_accept_min_ml = 1.5,
+      drs_accept_max_ml = 2.5,
+      max_transport_field_hs_days = 30,
+      max_transport_hs_lsd_days = 30,
+      max_transport_lsd_inrb_days = 90,
+      max_doorlooptijd_days = 90
+    ),
+    ui = list(
+      theme_primary = "#2C3E50",
+      theme_success = "#27AE60",
+      theme_info    = "#3498DB",
+      theme_warning = "#F39C12",
+      theme_danger  = "#E74C3C",
+      cache_minutes = 10,
+      default_date_range_days = 180
+    ),
+    app = list(
+      title = "Mbuji-Mayi Biobank Dashboard",
+      version = "0.0.0",
+      institution = "Institute of Tropical Medicine, Antwerp",
+      last_updated = as.character(Sys.Date())
+    )
+  )
+}
+
+# Load once (non-reactive, for scripts/tests)
+load_config <- function(path = "config.yml") {
+  base <- default_config()
+  if (!file.exists(path)) {
+    message("config.yml not found; using defaults.")
+    return(normalize_paths(base))
+  }
+  user <- yaml::read_yaml(path)
+  cfg  <- list_deep_merge(base, user)
+  cfg  <- validate_config(cfg)
+  normalize_paths(cfg)
+}
