@@ -11,16 +11,16 @@ mod_lab_results2_ui <- function(id) {
     bslib::card(
       bslib::card_header("Lab Results Controls"),
 
-      bslib::layout_columns(
-        col_widths = c(8, 4),
-        textInput(ns("barcode_search"), "Search barcode / Lab ID", placeholder = "e.g. 2401006"),
-        actionButton(ns("clear_search"), NULL, icon = bsicons::bs_icon("x-circle"),
-                     class = "btn-outline-secondary mt-4", title = "Clear search")
-      ),
+      h6("Source folders"),
+      helpText("Update any folder paths that have moved before loading the lab results."),
+      textInput(ns("pcr_dir"), "PCR folder", placeholder = "Path to PCR Excel files"),
+      textInput(ns("elisa_pe_dir"), "ELISA PE folder", placeholder = "Path to ELISA PE Excel files"),
+      textInput(ns("elisa_vsg_dir"), "ELISA VSG folder", placeholder = "Path to ELISA VSG Excel files"),
+      textInput(ns("ielisa_dir"), "iELISA folder", placeholder = "Path to iELISA Excel files"),
 
       bslib::layout_columns(
         col_widths = c(6, 6),
-        actionButton(ns("reload_lab"), "Reload lab data", icon = bsicons::bs_icon("arrow-repeat"),
+        actionButton(ns("reload_lab"), "Load lab data", icon = bsicons::bs_icon("arrow-repeat"),
                      class = "btn-primary w-100"),
         uiOutput(ns("lab_loaded_at"))
       ),
@@ -35,6 +35,15 @@ mod_lab_results2_ui <- function(id) {
       ),
 
       hr(),
+      h6("Search"),
+      bslib::layout_columns(
+        col_widths = c(8, 4),
+        textInput(ns("barcode_search"), "Barcode / Lab ID", placeholder = "e.g. KPS001, 2401006"),
+        actionButton(ns("clear_search"), NULL, icon = bsicons::bs_icon("x-circle"),
+                     class = "btn-outline-secondary mt-4", title = "Clear search")
+      ),
+
+      hr(),
       uiOutput(ns("lab_status_ui"))
     ),
 
@@ -43,6 +52,28 @@ mod_lab_results2_ui <- function(id) {
       bslib::navset_tab(
         bslib::nav_panel(
           "Overview",
+          bslib::layout_columns(
+            col_widths = c(4, 4, 4),
+            fill = FALSE,
+            bslib::value_box(
+              title = "PCR Positive",
+              value = textOutput(ns("vb_pcr_pos")),
+              showcase = bsicons::bs_icon("virus"),
+              theme = "danger"
+            ),
+            bslib::value_box(
+              title = "iELISA Positive",
+              value = textOutput(ns("vb_ielisa_pos")),
+              showcase = bsicons::bs_icon("clipboard2-check"),
+              theme = "info"
+            ),
+            bslib::value_box(
+              title = "Concordant Results",
+              value = textOutput(ns("vb_concordant")),
+              showcase = bsicons::bs_icon("check-circle"),
+              theme = "success"
+            )
+          ),
           DT::DTOutput(ns("tbl_overview"))
         ),
         bslib::nav_panel(
@@ -93,6 +124,30 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
 
+    normalise_dir_input <- function(value) {
+      if (is.null(value) || !length(value)) return("")
+      val <- as.character(value)[1]
+      if (is.na(val)) return("")
+      val <- trimws(val)
+      if (!nzchar(val)) return("")
+      if (exists("safe_path", mode = "function")) {
+        val <- tryCatch(safe_path(val), error = function(e) val)
+      }
+      if (is.null(val) || !nzchar(val)) return("")
+      val
+    }
+
+    update_dir_inputs <- function(dirs) {
+      defaults <- list(pcr = "", elisa_pe = "", elisa_vsg = "", ielisa = "")
+      dirs <- utils::modifyList(defaults, dirs)
+      updateTextInput(session, "pcr_dir", value = dirs$pcr)
+      updateTextInput(session, "elisa_pe_dir", value = dirs$elisa_pe)
+      updateTextInput(session, "elisa_vsg_dir", value = dirs$elisa_vsg)
+      updateTextInput(session, "ielisa_dir", value = dirs$ielisa)
+    }
+
+    lab_dirs <- reactiveVal(list(pcr = "", elisa_pe = "", elisa_vsg = "", ielisa = ""))
+
     thresholds_rv <- reactiveValues(
       pcr = 38,
       elisa = 50,
@@ -126,53 +181,79 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
     lab_reload <- reactiveVal(0)
 
     observeEvent(config(), {
+      cfg <- config()
+      if (is.null(cfg) || is.null(cfg$paths)) return()
+
+      dirs <- list(
+        pcr = normalise_dir_input(cfg$paths$pcr_dir),
+        elisa_pe = normalise_dir_input(cfg$paths$elisa_pe_dir),
+        elisa_vsg = normalise_dir_input(cfg$paths$elisa_vsg_dir),
+        ielisa = normalise_dir_input(cfg$paths$ielisa_dir)
+      )
+
+      update_dir_inputs(dirs)
+      lab_dirs(dirs)
       lab_reload(lab_reload() + 1)
     }, ignoreNULL = FALSE)
 
     observeEvent(input$reload_lab, {
+      dirs <- list(
+        pcr = normalise_dir_input(input$pcr_dir),
+        elisa_pe = normalise_dir_input(input$elisa_pe_dir),
+        elisa_vsg = normalise_dir_input(input$elisa_vsg_dir),
+        ielisa = normalise_dir_input(input$ielisa_dir)
+      )
+
+      update_dir_inputs(dirs)
+      lab_dirs(dirs)
       lab_reload(lab_reload() + 1)
     })
 
     lab_state <- eventReactive(lab_reload(), {
-      cfg <- config()
+      dirs <- lab_dirs()
+      defaults <- list(pcr = "", elisa_pe = "", elisa_vsg = "", ielisa = "")
+      dirs <- utils::modifyList(defaults, dirs)
 
-      if (is.null(cfg) || is.null(cfg$paths)) {
+      empty_data <- list(
+        pcr = tibble::tibble(),
+        elisa_pe = tibble::tibble(),
+        elisa_vsg = tibble::tibble(),
+        ielisa = tibble::tibble()
+      )
+
+      if (!any(vapply(dirs, function(x) nzchar(x), logical(1)))) {
         return(list(
-          data = list(
-            pcr = tibble::tibble(),
-            elisa_pe = tibble::tibble(),
-            elisa_vsg = tibble::tibble(),
-            ielisa = tibble::tibble()
-          ),
-          messages = "Configuration missing lab paths.",
+          data = empty_data,
+          dirs = dirs,
+          messages = "No lab result folders configured. Update the folder paths and reload.",
           timestamp = Sys.time()
         ))
       }
 
       withProgress(message = "Loading lab results...", value = 0, {
         incProgress(0.25, detail = "PCR")
-        pcr_tbl <- tryCatch(parse_pcr_results(cfg$paths$pcr_dir), error = function(e) {
+        pcr_tbl <- tryCatch(parse_pcr_results(dirs$pcr), error = function(e) {
           attr <- tibble::tibble()
           attr(attr, "messages") <- sprintf("PCR error: %s", e$message)
           attr
         })
 
         incProgress(0.25, detail = "ELISA PE")
-        elisa_pe_tbl <- tryCatch(parse_elisa_pe(cfg$paths$elisa_pe_dir), error = function(e) {
+        elisa_pe_tbl <- tryCatch(parse_elisa_pe(dirs$elisa_pe), error = function(e) {
           attr <- tibble::tibble()
           attr(attr, "messages") <- sprintf("ELISA PE error: %s", e$message)
           attr
         })
 
         incProgress(0.2, detail = "ELISA VSG")
-        elisa_vsg_tbl <- tryCatch(parse_elisa_vsg(cfg$paths$elisa_vsg_dir), error = function(e) {
+        elisa_vsg_tbl <- tryCatch(parse_elisa_vsg(dirs$elisa_vsg), error = function(e) {
           attr <- tibble::tibble()
           attr(attr, "messages") <- sprintf("ELISA VSG error: %s", e$message)
           attr
         })
 
         incProgress(0.15, detail = "iELISA")
-        ielisa_tbl <- tryCatch(parse_ielisa(cfg$paths$ielisa_dir), error = function(e) {
+        ielisa_tbl <- tryCatch(parse_ielisa(dirs$ielisa), error = function(e) {
           attr <- tibble::tibble()
           attr(attr, "messages") <- sprintf("iELISA error: %s", e$message)
           attr
@@ -187,6 +268,12 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
           attr(ielisa_tbl, "messages")
         ))))
 
+        missing_dirs <- names(dirs)[!nzchar(unlist(dirs))]
+        if (length(missing_dirs)) {
+          friendly <- c(pcr = "PCR", elisa_pe = "ELISA PE", elisa_vsg = "ELISA VSG", ielisa = "iELISA")
+          messages <- c(messages, sprintf("No folder provided for %s.", friendly[missing_dirs]))
+        }
+
         list(
           data = list(
             pcr = tibble::as_tibble(pcr_tbl),
@@ -194,8 +281,9 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
             elisa_vsg = tibble::as_tibble(elisa_vsg_tbl),
             ielisa = tibble::as_tibble(ielisa_tbl)
           ),
-          messages = messages,
-          timestamp = Sys.time()
+          messages = unique(stats::na.omit(messages)),
+          timestamp = Sys.time(),
+          dirs = dirs
         )
       })
     }, ignoreNULL = FALSE)
@@ -224,6 +312,20 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
       data <- state$data
       counts <- vapply(data, nrow, integer(1), USE.NAMES = TRUE)
 
+      dirs <- state$dirs
+      dir_labels <- c(pcr = "PCR", elisa_pe = "ELISA PE", elisa_vsg = "ELISA VSG", ielisa = "iELISA")
+      dir_list <- NULL
+      if (!is.null(dirs)) {
+        dir_list <- tags$ul(
+          class = "list-unstyled small mb-3",
+          lapply(names(dir_labels), function(nm) {
+            value <- dirs[[nm]]
+            display <- if (!is.null(value) && nzchar(value)) value else tags$em("Not set")
+            tags$li(tags$strong(dir_labels[[nm]]), ": ", display)
+          })
+        )
+      }
+
       status_list <- tags$ul(
         class = "list-unstyled mb-0",
         lapply(names(counts), function(nm) {
@@ -241,7 +343,7 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
         )
       }
 
-      tagList(status_list, msg_ui)
+      tagList(dir_list, status_list, msg_ui)
     })
 
     observeEvent(input$clear_search, {
@@ -277,6 +379,33 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
             grepl(term, lab_id_chr, fixed = TRUE)
         ) %>%
         dplyr::select(-barcode_chr, -lab_id_chr)
+    })
+
+    output$vb_pcr_pos <- renderText({
+      df <- joined()
+      if (!nrow(df)) return("0 / 0 (0%)")
+      n_pos <- sum(df$PCR_pos %in% TRUE, na.rm = TRUE)
+      n_tested <- sum(df$PCR_tested %in% TRUE, na.rm = TRUE)
+      pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
+    })
+
+    output$vb_ielisa_pos <- renderText({
+      df <- joined()
+      if (!nrow(df)) return("0 / 0 (0%)")
+      n_pos <- sum(df$iELISA_pos %in% TRUE, na.rm = TRUE)
+      n_tested <- sum(df$iELISA_tested %in% TRUE, na.rm = TRUE)
+      pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
+    })
+
+    output$vb_concordant <- renderText({
+      df <- joined()
+      if (!nrow(df)) return("0 / 0 (0%)")
+      n_conc <- sum(df$Concordant %in% TRUE, na.rm = TRUE)
+      n_eval <- sum(!is.na(df$Concordant))
+      pct <- if (n_eval > 0) round(100 * n_conc / n_eval, 1) else 0
+      sprintf("%s / %s (%s%%)", scales::comma(n_conc), scales::comma(n_eval), pct)
     })
 
     output$tbl_overview <- DT::renderDT({

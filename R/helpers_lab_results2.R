@@ -8,9 +8,21 @@ lab_result_tbl <- function(data, messages = character()) {
 }
 
 normalise_dir <- function(dir) {
-  d <- safe_path(dir)
-  if (is.null(d) || !nzchar(d)) return(NA_character_)
-  d
+  if (is.null(dir) || !length(dir)) return(NA_character_)
+
+  val <- as.character(dir)[1]
+  if (is.na(val)) return(NA_character_)
+
+  val <- trimws(val)
+  if (!nzchar(val)) return(NA_character_)
+
+  if (exists("safe_path", mode = "function")) {
+    val <- tryCatch(safe_path(val), error = function(e) val)
+  }
+
+  if (is.null(val) || !nzchar(val)) return(NA_character_)
+
+  val
 }
 
 collect_excel_files <- function(dir, label) {
