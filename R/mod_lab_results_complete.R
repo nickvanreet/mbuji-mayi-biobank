@@ -40,14 +40,35 @@ mod_lab_results_ui <- function(id) {
       shiny::hr(),
       
       shiny::h6("Positivity Thresholds"),
-      shiny::numericInput(ns("threshold_pcr"), "PCR Cq max", 
-                          value = 38, min = 1, max = 45, step = 1),
-      shiny::numericInput(ns("threshold_elisa_pe"), "ELISA PE PP% cutoff", 
-                          value = 50, min = 0, max = 100, step = 5),
-      shiny::numericInput(ns("threshold_elisa_vsg"), "ELISA VSG PP% cutoff", 
-                          value = 50, min = 0, max = 100, step = 5),
-      shiny::numericInput(ns("threshold_ielisa"), "iELISA % inhibition cutoff", 
-                          value = 35, min = 0, max = 100, step = 5),
+      
+      shiny::strong("PCR Targets (Cq max)"),
+      bslib::layout_columns(
+        col_widths = c(4, 4, 4),
+        shiny::numericInput(ns("threshold_pcr_177t"), "177T", 
+                            value = 38, min = 1, max = 45, step = 0.5, width = "100%"),
+        shiny::numericInput(ns("threshold_pcr_18s2"), "18S2", 
+                            value = 38, min = 1, max = 45, step = 0.5, width = "100%"),
+        shiny::numericInput(ns("threshold_pcr_rnasep"), "RNAseP", 
+                            value = 38, min = 1, max = 45, step = 0.5, width = "100%")
+      ),
+      
+      shiny::strong("ELISA PP% cutoffs"),
+      bslib::layout_columns(
+        col_widths = c(6, 6),
+        shiny::numericInput(ns("threshold_elisa_pe"), "PE", 
+                            value = 50, min = 0, max = 100, step = 5, width = "100%"),
+        shiny::numericInput(ns("threshold_elisa_vsg"), "VSG", 
+                            value = 50, min = 0, max = 100, step = 5, width = "100%")
+      ),
+      
+      shiny::strong("iELISA % inhibition cutoffs"),
+      bslib::layout_columns(
+        col_widths = c(6, 6),
+        shiny::numericInput(ns("threshold_ielisa_13"), "LiTat 1.3", 
+                            value = 35, min = 0, max = 100, step = 5, width = "100%"),
+        shiny::numericInput(ns("threshold_ielisa_15"), "LiTat 1.5", 
+                            value = 35, min = 0, max = 100, step = 5, width = "100%")
+      ),
       
       shiny::hr(),
       
@@ -68,7 +89,7 @@ mod_lab_results_ui <- function(id) {
           "Overview",
           
           bslib::layout_columns(
-            col_widths = c(3, 3, 3, 3),
+            col_widths = c(2, 2, 2, 2, 2, 2),
             fill = FALSE,
             
             bslib::value_box(
@@ -84,9 +105,15 @@ mod_lab_results_ui <- function(id) {
               theme = "danger"
             ),
             bslib::value_box(
-              title = "ELISA Positive",
-              value = shiny::textOutput(ns("vb_elisa_pos")),
+              title = "ELISA PE Positive",
+              value = shiny::textOutput(ns("vb_elisa_pe_pos")),
               showcase = bsicons::bs_icon("clipboard-check"),
+              theme = "warning"
+            ),
+            bslib::value_box(
+              title = "ELISA VSG Positive",
+              value = shiny::textOutput(ns("vb_elisa_vsg_pos")),
+              showcase = bsicons::bs_icon("clipboard-pulse"),
               theme = "warning"
             ),
             bslib::value_box(
@@ -94,6 +121,12 @@ mod_lab_results_ui <- function(id) {
               value = shiny::textOutput(ns("vb_ielisa_pos")),
               showcase = bsicons::bs_icon("clipboard2-check"),
               theme = "info"
+            ),
+            bslib::value_box(
+              title = "Any Positive",
+              value = shiny::textOutput(ns("vb_any_pos")),
+              showcase = bsicons::bs_icon("exclamation-triangle"),
+              theme = "success"
             )
           ),
           
@@ -407,12 +440,15 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       
       if (is.null(bio) || !nrow(bio)) return(tibble::tibble())
       
-      # Get current thresholds
+      # Get current thresholds with detailed markers
       thresholds <- list(
-        pcr_cq_max = input$threshold_pcr,
+        pcr_cq_177t = input$threshold_pcr_177t,
+        pcr_cq_18s2 = input$threshold_pcr_18s2,
+        pcr_cq_rnasep = input$threshold_pcr_rnasep,
         elisa_pe_pp = input$threshold_elisa_pe,
         elisa_vsg_pp = input$threshold_elisa_vsg,
-        ielisa_inh = input$threshold_ielisa
+        ielisa_inh_13 = input$threshold_ielisa_13,
+        ielisa_inh_15 = input$threshold_ielisa_15
       )
       
       tryCatch({
@@ -478,20 +514,23 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
     
-    output$vb_elisa_pos <- shiny::renderText({
+    output$vb_elisa_pe_pos <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
       
-      # Any ELISA positive (PE OR VSG)
-      n_pos <- sum(
-        (df$elisa_pe_is_pos | df$elisa_vsg_is_pos) %||% FALSE, 
-        na.rm = TRUE
-      )
-      # Count samples tested in EITHER assay
-      n_tested <- sum(
-        (df$elisa_pe_tested | df$elisa_vsg_tested) %||% FALSE,
-        na.rm = TRUE
-      )
+      n_pos <- sum(df$elisa_pe_is_pos %||% FALSE, na.rm = TRUE)
+      n_tested <- sum(df$elisa_pe_tested %||% FALSE, na.rm = TRUE)
+      pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      
+      sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
+    })
+    
+    output$vb_elisa_vsg_pos <- shiny::renderText({
+      df <- joined_data()
+      if (!nrow(df)) return("0 / 0 (0%)")
+      
+      n_pos <- sum(df$elisa_vsg_is_pos %||% FALSE, na.rm = TRUE)
+      n_tested <- sum(df$elisa_vsg_tested %||% FALSE, na.rm = TRUE)
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
@@ -503,6 +542,22 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       
       n_pos <- sum(df$ielisa_is_pos %||% FALSE, na.rm = TRUE)
       n_tested <- sum(df$ielisa_tested %||% FALSE, na.rm = TRUE)
+      pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
+      
+      sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
+    })
+    
+    output$vb_any_pos <- shiny::renderText({
+      df <- joined_data()
+      if (!nrow(df)) return("0 / 0 (0%)")
+      
+      # Any test positive
+      n_pos <- sum(df$Any_pos %||% FALSE, na.rm = TRUE)
+      # Total samples with at least one test
+      n_tested <- sum(
+        (df$PCR_tested | df$elisa_pe_tested | df$elisa_vsg_tested | df$ielisa_tested) %||% FALSE,
+        na.rm = TRUE
+      )
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
@@ -640,9 +695,14 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     output$tbl_pcr <- DT::renderDT({
       pcr <- lab_data_raw()$pcr
       
-      if (!nrow(pcr)) {
+      if (is.null(pcr) || !nrow(pcr)) {
         return(DT::datatable(tibble::tibble(Message = "No PCR data loaded")))
       }
+      
+      # Select only columns that exist
+      available_cols <- names(pcr)
+      numeric_cols <- available_cols[available_cols %in% c("Cq_177T", "SD_177T", "Cq_18S2", 
+                                                             "SD_18S2", "Cq_RNAseP", "SD_RNAseP")]
       
       DT::datatable(
         pcr,
@@ -650,18 +710,20 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = dplyr::any_of(c("Cq_177T", "SD_177T", "Cq_18S2", 
-                                    "SD_18S2", "Cq_RNAseP", "SD_RNAseP")),
-                        digits = 2)
+        {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 2) else .}
     })
     
     # ELISA PE table
     output$tbl_elisa_pe <- DT::renderDT({
       elisa_pe <- lab_data_raw()$elisa_pe
       
-      if (!nrow(elisa_pe)) {
+      if (is.null(elisa_pe) || !nrow(elisa_pe)) {
         return(DT::datatable(tibble::tibble(Message = "No ELISA PE data loaded")))
       }
+      
+      available_cols <- names(elisa_pe)
+      numeric_cols <- available_cols[available_cols %in% c("d_od", "pp_percent", "od_value", 
+                                                             "od_sample", "od_nc", "od_pc")]
       
       DT::datatable(
         elisa_pe,
@@ -669,16 +731,20 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = dplyr::any_of(c("d_od", "pp_percent")), digits = 2)
+        {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 2) else .}
     })
     
     # ELISA VSG table
     output$tbl_elisa_vsg <- DT::renderDT({
       elisa_vsg <- lab_data_raw()$elisa_vsg
       
-      if (!nrow(elisa_vsg)) {
+      if (is.null(elisa_vsg) || !nrow(elisa_vsg)) {
         return(DT::datatable(tibble::tibble(Message = "No ELISA VSG data loaded")))
       }
+      
+      available_cols <- names(elisa_vsg)
+      numeric_cols <- available_cols[available_cols %in% c("d_od", "pp_percent", "od_value",
+                                                             "od_sample", "od_nc", "od_pc")]
       
       DT::datatable(
         elisa_vsg,
@@ -686,16 +752,20 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = dplyr::any_of(c("d_od", "pp_percent")), digits = 2)
+        {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 2) else .}
     })
     
     # iELISA table
     output$tbl_ielisa <- DT::renderDT({
       ielisa <- lab_data_raw()$ielisa
       
-      if (!nrow(ielisa)) {
+      if (is.null(ielisa) || !nrow(ielisa)) {
         return(DT::datatable(tibble::tibble(Message = "No iELISA data loaded")))
       }
+      
+      available_cols <- names(ielisa)
+      numeric_cols <- available_cols[available_cols %in% c("pct_inh_13", "pct_inh_15", 
+                                                             "od_13", "od_15", "od_sample")]
       
       DT::datatable(
         ielisa,
@@ -703,36 +773,46 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = dplyr::any_of(c("pct_inh_13", "pct_inh_15")), digits = 1)
+        {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 1) else .}
     })
     
     # Concordance table
     output$tbl_concordance <- DT::renderDT({
       df <- joined_data()
       
-      if (!nrow(df)) {
+      if (is.null(df) || !nrow(df)) {
         return(DT::datatable(tibble::tibble(Message = "No data for concordance")))
       }
       
       concordance_details <- df %>%
         dplyr::mutate(
           PCR = dplyr::case_when(
-            PCR_is_pos ~ "POS",
-            PCR_tested & !PCR_is_pos ~ "NEG",
-            TRUE ~ "Not Tested"
+            is.na(PCR_tested) | !PCR_tested ~ "Not Tested",
+            PCR_is_pos %||% FALSE ~ "POS",
+            TRUE ~ "NEG"
           ),
-          ELISA = dplyr::case_when(
-            elisa_pe_is_pos | elisa_vsg_is_pos ~ "POS",
-            (elisa_pe_tested | elisa_vsg_tested) & !elisa_pe_is_pos & !elisa_vsg_is_pos ~ "NEG",
-            TRUE ~ "Not Tested"
+          ELISA_PE = dplyr::case_when(
+            is.na(elisa_pe_tested) | !elisa_pe_tested ~ "Not Tested",
+            elisa_pe_is_pos %||% FALSE ~ "POS",
+            TRUE ~ "NEG"
+          ),
+          ELISA_VSG = dplyr::case_when(
+            is.na(elisa_vsg_tested) | !elisa_vsg_tested ~ "Not Tested",
+            elisa_vsg_is_pos %||% FALSE ~ "POS",
+            TRUE ~ "NEG"
           ),
           iELISA = dplyr::case_when(
-            ielisa_is_pos ~ "POS",
-            ielisa_tested & !ielisa_is_pos ~ "NEG",
-            TRUE ~ "Not Tested"
+            is.na(ielisa_tested) | !ielisa_tested ~ "Not Tested",
+            ielisa_is_pos %||% FALSE ~ "POS",
+            TRUE ~ "NEG"
+          ),
+          Concordant_Status = dplyr::case_when(
+            is.na(Concordant) ~ "Insufficient Data",
+            Concordant == TRUE ~ "YES",
+            TRUE ~ "NO"
           )
         ) %>%
-        dplyr::select(barcode, lab_id, PCR, ELISA, iELISA, Concordant) %>%
+        dplyr::select(barcode, lab_id, PCR, ELISA_PE, ELISA_VSG, iELISA, Concordant = Concordant_Status) %>%
         dplyr::arrange(barcode)
       
       DT::datatable(
@@ -744,8 +824,8 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         DT::formatStyle(
           'Concordant',
           backgroundColor = DT::styleEqual(
-            c(TRUE, FALSE),
-            c('#d4edda', '#f8d7da')
+            c("YES", "NO", "Insufficient Data"),
+            c('#d4edda', '#f8d7da', '#e2e3e5')
           )
         )
     })
@@ -814,38 +894,64 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       
       if (is.null(lab)) return(tibble::tibble())
       
-      # Combine all lab data for control extraction
-      all_labs <- dplyr::bind_rows(
-        if (nrow(lab$pcr) > 0) lab$pcr %>% dplyr::mutate(assay_label = "PCR") else NULL,
-        if (nrow(lab$elisa_pe) > 0) lab$elisa_pe %>% dplyr::mutate(assay_label = "ELISA_PE") else NULL,
-        if (nrow(lab$elisa_vsg) > 0) lab$elisa_vsg %>% dplyr::mutate(assay_label = "ELISA_VSG") else NULL,
-        if (nrow(lab$ielisa) > 0) lab$ielisa %>% dplyr::mutate(assay_label = "iELISA") else NULL
-      )
-      
-      if (is.null(all_labs) || !nrow(all_labs)) return(tibble::tibble())
-      
-      extract_controls(all_labs)
+      tryCatch({
+        # Combine all lab data for control extraction
+        all_labs <- dplyr::bind_rows(
+          if (!is.null(lab$pcr) && nrow(lab$pcr) > 0) {
+            lab$pcr %>% dplyr::mutate(assay_label = "PCR")
+          } else NULL,
+          if (!is.null(lab$elisa_pe) && nrow(lab$elisa_pe) > 0) {
+            lab$elisa_pe %>% dplyr::mutate(assay_label = "ELISA_PE")
+          } else NULL,
+          if (!is.null(lab$elisa_vsg) && nrow(lab$elisa_vsg) > 0) {
+            lab$elisa_vsg %>% dplyr::mutate(assay_label = "ELISA_VSG")
+          } else NULL,
+          if (!is.null(lab$ielisa) && nrow(lab$ielisa) > 0) {
+            lab$ielisa %>% dplyr::mutate(assay_label = "iELISA")
+          } else NULL
+        )
+        
+        if (is.null(all_labs) || !nrow(all_labs)) return(tibble::tibble())
+        
+        extract_controls(all_labs)
+      }, error = function(e) {
+        warning("Failed to extract controls: ", e$message)
+        tibble::tibble()
+      })
     })
     
     # Filter controls
     controls_filtered <- shiny::reactive({
       controls <- controls_data()
-      shiny::req(controls, nrow(controls) > 0)
       
-      if (!identical(input$qc_assay, "All")) {
-        controls <- controls %>% dplyr::filter(assay == input$qc_assay)
+      if (is.null(controls) || !nrow(controls)) {
+        return(tibble::tibble())
       }
       
-      if (!identical(input$qc_control, "All")) {
-        controls <- controls %>% dplyr::filter(control_type == input$qc_control)
-      }
-      
-      controls
+      tryCatch({
+        if (!identical(input$qc_assay, "All")) {
+          controls <- controls %>% dplyr::filter(assay == input$qc_assay)
+        }
+        
+        if (!identical(input$qc_control, "All")) {
+          controls <- controls %>% dplyr::filter(control_type == input$qc_control)
+        }
+        
+        controls
+      }, error = function(e) {
+        warning("Failed to filter controls: ", e$message)
+        tibble::tibble()
+      })
     })
     
     # QC bounds
     qc_bounds <- shiny::reactive({
-      calculate_qc_bounds(controls_data())
+      tryCatch({
+        calculate_qc_bounds(controls_data())
+      }, error = function(e) {
+        warning("Failed to calculate QC bounds: ", e$message)
+        tibble::tibble()
+      })
     })
     
     # Controls summary table
@@ -876,51 +982,72 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
     # Levey-Jennings plot
     output$qc_lj_plot <- shiny::renderPlot({
       controls <- controls_filtered()
-      shiny::req(controls, nrow(controls) > 0)
       
-      # If multiple assay/control combinations, create grid
-      combos <- controls %>%
-        dplyr::distinct(assay, control_type)
+      if (is.null(controls) || !nrow(controls)) {
+        plot.new()
+        text(0.5, 0.5, "No control data available.\nControls should have lab_id/barcode matching patterns like:\nPC, NC, CC, CN, or 'positive control', 'negative control'", 
+             cex = 1.2, col = "gray50")
+        return()
+      }
       
-      if (nrow(combos) == 1) {
-        # Single plot
-        plot_controls_lj(controls)
-      } else if (nrow(combos) <= 6) {
-        # Grid of plots (if patchwork available)
-        if (requireNamespace("patchwork", quietly = TRUE)) {
-          plots <- controls %>%
-            dplyr::group_by(assay, control_type) %>%
-            dplyr::group_split() %>%
-            purrr::map(plot_controls_lj)
-          patchwork::wrap_plots(plots, ncol = 2)
+      tryCatch({
+        # If multiple assay/control combinations, create grid
+        combos <- controls %>%
+          dplyr::distinct(assay, control_type)
+        
+        if (nrow(combos) == 1) {
+          # Single plot
+          plot_controls_lj(controls)
+        } else if (nrow(combos) <= 6) {
+          # Grid of plots (if patchwork available)
+          if (requireNamespace("patchwork", quietly = TRUE)) {
+            plots <- controls %>%
+              dplyr::group_by(assay, control_type) %>%
+              dplyr::group_split() %>%
+              purrr::map(plot_controls_lj)
+            patchwork::wrap_plots(plots, ncol = 2)
+          } else {
+            # Just plot first combo
+            controls %>%
+              dplyr::filter(assay == combos$assay[1], 
+                            control_type == combos$control_type[1]) %>%
+              plot_controls_lj()
+          }
         } else {
-          # Just plot first combo
+          # Too many combos, plot first
           controls %>%
             dplyr::filter(assay == combos$assay[1], 
                           control_type == combos$control_type[1]) %>%
             plot_controls_lj()
         }
-      } else {
-        # Too many combos, plot first
-        controls %>%
-          dplyr::filter(assay == combos$assay[1], 
-                        control_type == combos$control_type[1]) %>%
-          plot_controls_lj()
-      }
+      }, error = function(e) {
+        plot.new()
+        text(0.5, 0.5, paste("Error creating plot:", e$message), cex = 1, col = "red")
+      })
     })
     
     # Raw controls data
     output$qc_controls_raw <- DT::renderDT({
       controls <- controls_filtered()
-      shiny::req(controls)
       
-      DT::datatable(
-        controls,
-        options = list(pageLength = 25, scrollX = TRUE),
-        filter = "top",
-        rownames = FALSE
-      ) %>%
-        DT::formatRound(columns = dplyr::any_of(c("od", "cq")), digits = 3)
+      if (is.null(controls) || !nrow(controls)) {
+        return(DT::datatable(tibble::tibble(Message = "No control data available")))
+      }
+      
+      tryCatch({
+        available_cols <- names(controls)
+        numeric_cols <- available_cols[available_cols %in% c("od", "cq")]
+        
+        DT::datatable(
+          controls,
+          options = list(pageLength = 25, scrollX = TRUE),
+          filter = "top",
+          rownames = FALSE
+        ) %>%
+          {if (length(numeric_cols) > 0) DT::formatRound(., columns = numeric_cols, digits = 3) else .}
+      }, error = function(e) {
+        DT::datatable(tibble::tibble(Error = paste("Failed to display controls:", e$message)))
+      })
     })
     
     # === DOWNLOADS ===

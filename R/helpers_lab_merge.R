@@ -1,12 +1,13 @@
 # helpers_lab_merge.R
 # =====================================================================
 # Corrected lab merge with canonical calls and proper deduplication
+# VERSION 3.0 - With detailed threshold support for each marker
 # =====================================================================
 
 #' Merge lab data with biobank (CORRECTED VERSION V3)
 #' @param biobank Biobank data frame
 #' @param lab List containing pcr, elisa_pe, elisa_vsg, ielisa
-#' @param thresholds List with pcr_cq_max, elisa_pe_pp, elisa_vsg_pp, ielisa_inh
+#' @param thresholds List with detailed thresholds for each marker
 #' @return Merged data frame with canonical calls
 #' @export
 merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
@@ -15,13 +16,16 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
     return(tibble::tibble())
   }
   
-  # Default thresholds
+  # Default thresholds with detailed markers
   if (is.null(thresholds)) {
     thresholds <- list(
-      pcr_cq_max = 38,
+      pcr_cq_177t = 38,
+      pcr_cq_18s2 = 38,
+      pcr_cq_rnasep = 38,
       elisa_pe_pp = 50,
       elisa_vsg_pp = 50,
-      ielisa_inh = 35
+      ielisa_inh_13 = 35,
+      ielisa_inh_15 = 35
     )
   }
   
@@ -50,12 +54,12 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
       dplyr::mutate(
         # Canonicalize PCR calls
         PCR_call = canonicalise_call(PCR_call),
-        # Positive if: call is "pos" OR any Cq below threshold
+        # Positive if: call is "pos" OR any Cq below respective threshold
         PCR_is_pos = PCR_call == "pos" | 
-          (!is.na(Cq_177T) & Cq_177T <= thresholds$pcr_cq_max) |
-          (!is.na(Cq_18S2) & Cq_18S2 <= thresholds$pcr_cq_max),
+          (!is.na(Cq_177T) & Cq_177T <= thresholds$pcr_cq_177t) |
+          (!is.na(Cq_18S2) & Cq_18S2 <= thresholds$pcr_cq_18s2),
         # Mark as tested if we have ANY Cq value
-        PCR_tested = !is.na(Cq_177T) | !is.na(Cq_18S2) | !is.na(PCR_call)
+        PCR_tested = !is.na(Cq_177T) | !is.na(Cq_18S2) | !is.na(Cq_RNAseP) | !is.na(PCR_call)
       ) %>%
       # Deduplicate: keep latest/best per lab_id
       dplyr::arrange(lab_id, dplyr::desc(!is.na(Cq_177T))) %>%
@@ -71,7 +75,7 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
         relationship = "many-to-one"
       )
     
-    message("  Matched: ", sum(!is.na(result$PCR_call) | result$PCR_tested %||% FALSE), " samples")
+    message("  Matched: ", sum(result$PCR_tested %||% FALSE), " samples")
   } else {
     message("No PCR data available")
     result$PCR_call <- NA_character_
@@ -187,13 +191,13 @@ merge_lab_with_biobank_v2 <- function(biobank, lab, thresholds = NULL) {
       dplyr::mutate(
         pct_inh_13 = suppressWarnings(as.numeric(pct_inh_13)),
         pct_inh_15 = suppressWarnings(as.numeric(pct_inh_15)),
-        # Create call from results or % inhibition
+        # Create call from results or % inhibition with separate thresholds
         ielisa_call = dplyr::case_when(
           !is.na(res_final) ~ canonicalise_call(res_final),
           !is.na(res_13) & canonicalise_call(res_13) == "pos" ~ "pos",
           !is.na(res_15) & canonicalise_call(res_15) == "pos" ~ "pos",
-          !is.na(pct_inh_13) & pct_inh_13 >= thresholds$ielisa_inh ~ "pos",
-          !is.na(pct_inh_15) & pct_inh_15 >= thresholds$ielisa_inh ~ "pos",
+          !is.na(pct_inh_13) & pct_inh_13 >= thresholds$ielisa_inh_13 ~ "pos",
+          !is.na(pct_inh_15) & pct_inh_15 >= thresholds$ielisa_inh_15 ~ "pos",
           !is.na(pct_inh_13) | !is.na(pct_inh_15) ~ "neg",
           TRUE ~ NA_character_
         ),
