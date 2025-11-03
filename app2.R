@@ -132,12 +132,12 @@ source("R/utils_join.R", local = TRUE)
 source("R/mod_lab_results_complete.R", local = TRUE)  # This module
 source("R/helpers_lab_corrected.R", local = TRUE)  # PCR/iELISA parsing
 source("R/helpers_lab_results2.R", local = TRUE)  # Canonical calls
-source("R/helpers_lab_merge.R", local = TRUE)     # Corrected merge
+source("R/helpers_lab_merge_FIXED.R", local = TRUE)     # Corrected merge
 source("R/mod_geo_map_complete.R", local = TRUE)
 source("R/mod_extractions_complete.R", local = TRUE)
 source("R/helpers_concordance.R", local = TRUE)   # NEW
 source("R/helpers_dates.R", local = TRUE)         # NEW
-source("R/helpers_controls.R", local = TRUE)
+source("R/helpers_controls_v2.R", local = TRUE)
 
                          
 # --- HELPERS FOR THIS APP ----------------------------------------------------
