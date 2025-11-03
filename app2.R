@@ -416,6 +416,26 @@ server <- function(input, output, session) {
     if (length(input$filter_sex))                  df <- df %>% dplyr::filter(sex %in% input$filter_sex)
     df
   })
+
+  # --- MODULES -------------------------------------------------------------
+  lab_modules <- mod_lab_results_server(
+    "lab_results",
+    biobank_clean = clean_data,
+    config = cfg
+  )
+
+  mod_extractions_qc_server(
+    "extractions_qc",
+    biobank_clean = clean_data,
+    config = cfg
+  )
+
+  mod_geo_map_server(
+    "geo_map",
+    biobank_filtered = filtered_data,
+    lab_joined = lab_modules$lab_joined,
+    config = cfg
+  )
   
   # KPIs
   output$vb_total <- renderText({
