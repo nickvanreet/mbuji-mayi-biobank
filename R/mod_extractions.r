@@ -221,7 +221,17 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     # Deduplicated data
     extractions_dedup <- shiny::reactive({
       res <- extractions_flagged()
-      if (is.null(res$dedup)) tibble::tibble() else res$dedup
+
+      if (!is.null(res$dedup) && nrow(res$dedup)) {
+        return(res$dedup)
+      }
+
+      flagged <- res$flagged
+      if (!is.null(flagged) && nrow(flagged)) {
+        return(flagged)
+      }
+
+      tibble::tibble()
     })
     
     # Update filter choices
@@ -287,7 +297,7 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     extractions_filtered <- shiny::reactive({
       df <- extractions_dedup()
       shiny::req(df)
-      
+
       if (!nrow(df)) return(tibble::tibble())
       
       # Province filter
