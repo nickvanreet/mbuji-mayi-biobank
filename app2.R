@@ -17,9 +17,13 @@ suppressPackageStartupMessages({
   library(binom)
   library(yaml)
 })
-
+options(shiny.fullstacktrace = TRUE)
 # Allow larger uploads (e.g. shapefiles packaged as ZIP)
 options(shiny.maxRequestSize = 50 * 1024^2)
+# Use Bootstrap Icons safely *without* hitting validateIcon()
+bi_tag <- function(name, ...) htmltools::tagList(bsicons::bs_icon(name, ...))
+# For any component that *forces* icon=, move the icon into the label/text
+with_icon <- function(tag, icon) htmltools::tagList(icon, tag)
 
 # Windows locale nudge for accented folders (harmless on other OSes)
 try({
@@ -242,11 +246,11 @@ ui <- page_navbar(
     layout_columns(
       fill = FALSE, col_widths = c(3,3,3,3),
       value_box(title = "Total Samples", value = textOutput("vb_total"),
-                showcase = bs_icon("clipboard-data"), theme = "primary"),
+                showcase = bs_icon("clipboard"), theme = "primary"),
       value_box(title = "DA Samples", value = textOutput("vb_da"),
-                showcase = bs_icon("clipboard-check"), theme = "info"),
+                showcase = bs_icon("clipboard"), theme = "info"),
       value_box(title = "DP Samples", value = textOutput("vb_dp"),
-                showcase = bs_icon("clipboard-pulse"), theme = "success"),
+                showcase = bs_icon("clipboard"), theme = "success"),
       value_box(title = "Sites Active", value = textOutput("vb_sites"),
                 showcase = bs_icon("hospital"), theme = "warning")
     ),
@@ -460,7 +464,7 @@ server <- function(input, output, session) {
   mod_geo_map_server(
     "geo_map",
     biobank_filtered = filtered_data,
-    lab_joined = lab_modules$lab_joined,
+    joined_data = lab_modules$lab_joined,
     lab_thresholds = lab_modules$thresholds,
     config = cfg
   )

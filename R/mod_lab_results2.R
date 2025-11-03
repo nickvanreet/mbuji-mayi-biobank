@@ -20,7 +20,7 @@ mod_lab_results2_ui <- function(id) {
 
       bslib::layout_columns(
         col_widths = c(6, 6),
-        actionButton(ns("reload_lab"), "Load lab data", icon = bsicons::bs_icon("arrow-repeat"),
+        actionButton(ns("reload_lab"), "Load lab data", icon = bsicons::bs_icon("clipboard"),
                      class = "btn-primary w-100"),
         uiOutput(ns("lab_loaded_at"))
       ),
@@ -39,7 +39,7 @@ mod_lab_results2_ui <- function(id) {
       bslib::layout_columns(
         col_widths = c(8, 4),
         textInput(ns("barcode_search"), "Barcode / Lab ID", placeholder = "e.g. KPS001, 2401006"),
-        actionButton(ns("clear_search"), NULL, icon = bsicons::bs_icon("x-circle"),
+        actionButton(ns("clear_search"), NULL, icon = bsicons::bs_icon("clipboard"),
                      class = "btn-outline-secondary mt-4", title = "Clear search")
       ),
 
@@ -58,19 +58,19 @@ mod_lab_results2_ui <- function(id) {
             bslib::value_box(
               title = "PCR Positive",
               value = textOutput(ns("vb_pcr_pos")),
-              showcase = bsicons::bs_icon("virus"),
+              showcase = bsicons::bs_icon("clipboard"),
               theme = "danger"
             ),
             bslib::value_box(
               title = "iELISA Positive",
               value = textOutput(ns("vb_ielisa_pos")),
-              showcase = bsicons::bs_icon("clipboard2-check"),
+              showcase = bsicons::bs_icon("clipboard"),
               theme = "info"
             ),
             bslib::value_box(
               title = "Concordant Results",
               value = textOutput(ns("vb_concordant")),
-              showcase = bsicons::bs_icon("check-circle"),
+              showcase = bsicons::bs_icon("clipboard"),
               theme = "success"
             )
           ),
@@ -170,13 +170,17 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
       }
     })
 
-    thresholds <- reactive({
-      list(
-        pcr = thresholds_rv$pcr,
-        elisa = thresholds_rv$elisa,
-        ielisa = thresholds_rv$ielisa
-      )
-    })
+    thresholds <- shiny::reactive(list(
+      pcr_cq_max = input$threshold_pcr,
+      elisa_pp_cut = input$threshold_elisa,
+      ielisa_inh_cut = input$threshold_ielisa
+    ))
+    
+    return(list(
+      lab_joined   = joined_reactive,
+      joined_data  = joined_reactive,   # <- alias so other modules find it
+      thresholds   = thresholds
+    ))
 
     lab_reload <- reactiveVal(0)
 
@@ -390,11 +394,11 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
 
-    output$vb_ielisa_pos <- renderText({
-      df <- joined()
+    output$vb_ielisa_pos <- shiny::renderText({
+      df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
       n_pos <- sum(df$iELISA_pos %in% TRUE, na.rm = TRUE)
-      n_tested <- sum(df$iELISA_tested %in% TRUE, na.rm = TRUE)
+      n_tested <- sum(!is.na(df$iELISA_pct_13) | !is.na(df$iELISA_pct_15))
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
     })
@@ -408,44 +412,72 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
       sprintf("%s / %s (%s%%)", scales::comma(n_conc), scales::comma(n_eval), pct)
     })
 
+    # === TABLES ===
     output$tbl_overview <- DT::renderDT({
-      df <- joined_filtered()
-      shiny::validate(shiny::need(nrow(df) > 0, "No lab results available for the current filters."))
-
-      overview <- df %>%
-        dplyr::mutate(
-          PCR_result = dplyr::case_when(PCR_pos %in% TRUE ~ "POS", PCR_pos %in% FALSE ~ "NEG", TRUE ~ ""),
-          ELISA_PE_result = dplyr::case_when(ELISA_PE_pos %in% TRUE ~ "POS", ELISA_PE_pos %in% FALSE ~ "NEG", TRUE ~ ""),
-          ELISA_VSG_result = dplyr::case_when(ELISA_VSG_pos %in% TRUE ~ "POS", ELISA_VSG_pos %in% FALSE ~ "NEG", TRUE ~ ""),
-          iELISA_result = dplyr::case_when(iELISA_pos %in% TRUE ~ "POS", iELISA_pos %in% FALSE ~ "NEG", TRUE ~ ""),
-          Any_positive = dplyr::case_when(Any_positive %in% TRUE ~ "Yes", Any_positive %in% FALSE ~ "No", TRUE ~ ""),
-          Concordant = dplyr::case_when(Concordant %in% TRUE ~ "Yes", Concordant %in% FALSE ~ "No", TRUE ~ "")
-        ) %>%
-        dplyr::mutate(dplyr::across(
-          dplyr::all_of(c("Cq_177T", "Cq_18S2", "Cq_RNAseP", "OD_PE", "PP_percent_PE",
-                           "OD_VSG", "PP_percent_VSG", "iELISA_pct_13", "iELISA_pct_15")),
-          ~round(.x, 2)
-        )) %>%
+      df <- filtered_data()
+      if (!nrow(df)) {
+        return(DT::datatable(tibble::tibble(Message = "No lab results available")))
+      }
+      
+      display_df <- df %>%
         dplyr::select(
           barcode, lab_id,
-          PCR_result, PCR_call, Cq_177T, Cq_18S2, Cq_RNAseP,
-          ELISA_PE_result, OD_PE, PP_percent_PE,
-          ELISA_VSG_result, OD_VSG, PP_percent_VSG,
-          iELISA_result, iELISA_pct_13, iELISA_pct_15,
-          Any_positive, Concordant
+          # PCR
+          PCR_Call = PCR_call,                # <-- this name exists in helpers as PCR_call
+          `177T Cq` = Cq_177T,
+          `18S2 Cq` = Cq_18S2,
+          `RNAseP Cq` = Cq_RNAseP,
+          PCR_Status = PCR_pos,
+          # ELISA PE
+          `PE PP%` = PP_percent_PE,
+          `PE ΔOD` = OD_PE,
+          PE_Status = ELISA_PE_pos,
+          # ELISA VSG
+          `VSG PP%` = PP_percent_VSG,
+          `VSG ΔOD` = OD_VSG,
+          VSG_Status = ELISA_VSG_pos,
+          # iELISA
+          `iELISA 1.3%` = iELISA_pct_13,
+          `iELISA 1.5%` = iELISA_pct_15,
+          iELISA_Status = iELISA_pos,
+          # Overall
+          Concordant
+        ) %>%
+        dplyr::mutate(
+          dplyr::across(c(PCR_Status, PE_Status, VSG_Status, iELISA_Status, Concordant),
+                        ~dplyr::case_when(
+                          . == TRUE ~ "POS",
+                          . == FALSE ~ "NEG",
+                          TRUE ~ "NA"
+                        ))
         )
-
+      
       DT::datatable(
-        overview,
-        options = list(pageLength = 20, scrollX = TRUE, dom = "tip"),
-        rownames = FALSE,
+        display_df,
+        options = list(pageLength = 20, scrollX = TRUE),
         filter = "top",
-        caption = htmltools::tags$caption(
-          style = "caption-side: bottom; text-align: left;",
-          "Exact PCR Cq values and ELISA/iELISA metrics shown per sample."
+        rownames = FALSE
+      ) %>%
+        DT::formatRound(columns = c("177T Cq", "18S2 Cq", "RNAseP Cq",
+                                    "PE PP%", "PE ΔOD", "VSG PP%", "VSG ΔOD",
+                                    "iELISA 1.3%", "iELISA 1.5%"),
+                        digits = 2) %>%
+        DT::formatStyle(
+          c("PCR_Status", "PE_Status", "VSG_Status", "iELISA_Status"),
+          backgroundColor = DT::styleEqual(
+            c("POS", "NEG", "NA"),
+            c("#f8d7da", "#d4edda", "#e2e3e5")
+          )
+        ) %>%
+        DT::formatStyle(
+          "Concordant",
+          backgroundColor = DT::styleEqual(
+            c("POS", "NEG", "NA"),
+            c("#d4edda", "#fff3cd", "#e2e3e5")
+          )
         )
-      )
     })
+    
 
     output$tbl_pcr <- DT::renderDT({
       pcr <- lab_data()$pcr
@@ -487,41 +519,37 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
     }
 
     output$qc_pcr <- DT::renderDT({
-      df <- summarise_pcr_controls(lab_data()$pcr, thresholds()$pcr)
-      shiny::validate(shiny::need(nrow(df) > 0, "No PCR control rows detected."))
-      pal <- status_palette(df$Status)
-      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
-        DT::formatStyle("Status", target = "row",
-                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+      DT::datatable(
+        summarise_pcr_controls(lab_data_raw()$pcr, input$threshold_pcr),
+        options = list(pageLength = 10),
+        rownames = FALSE
+      )
     })
-
+    
     output$qc_elisa_pe <- DT::renderDT({
-      df <- summarise_elisa_controls(lab_data()$elisa_pe, thresholds()$elisa, "ELISA PE")
-      shiny::validate(shiny::need(nrow(df) > 0, "No ELISA PE control rows detected."))
-      pal <- status_palette(df$Status)
-      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
-        DT::formatStyle("Status", target = "row",
-                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+      DT::datatable(
+        summarise_elisa_controls(lab_data_raw()$elisa_pe, input$threshold_elisa, "ELISA_PE"),
+        options = list(pageLength = 10),
+        rownames = FALSE
+      )
     })
-
+    
     output$qc_elisa_vsg <- DT::renderDT({
-      df <- summarise_elisa_controls(lab_data()$elisa_vsg, thresholds()$elisa, "ELISA VSG")
-      shiny::validate(shiny::need(nrow(df) > 0, "No ELISA VSG control rows detected."))
-      pal <- status_palette(df$Status)
-      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
-        DT::formatStyle("Status", target = "row",
-                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+      DT::datatable(
+        summarise_elisa_controls(lab_data_raw()$elisa_vsg, input$threshold_elisa, "ELISA_VSG"),
+        options = list(pageLength = 10),
+        rownames = FALSE
+      )
     })
-
+    
     output$qc_ielisa <- DT::renderDT({
-      df <- summarise_ielisa_controls(joined(), thresholds()$ielisa)
-      shiny::validate(shiny::need(nrow(df) > 0, "No iELISA control rows detected."))
-      pal <- status_palette(df$Status)
-      DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
-        DT::formatStyle("Status", target = "row",
-                        backgroundColor = DT::styleEqual(pal$status, pal$colors))
+      DT::datatable(
+        summarise_ielisa_controls(lab_data_raw()$ielisa, input$threshold_ielisa),
+        options = list(pageLength = 10),
+        rownames = FALSE
+      )
     })
-
+    
     output$dl_pcr <- downloadHandler(
       filename = function() paste0("pcr_results_", format(Sys.Date(), "%Y%m%d"), ".csv"),
       content = function(file) {

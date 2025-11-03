@@ -65,7 +65,7 @@ mod_geo_map_ui <- function(id) {
 #' @param lab_joined Reactive containing joined lab results
 #' @param config Reactive containing app configuration
 #' @export
-mod_geo_map_server <- function(id, biobank_filtered, lab_joined, lab_thresholds = NULL, config) {
+mod_geo_map_server <- function(id, biobank_filtered, joined_data, lab_thresholds = NULL, config) {
   shiny::moduleServer(id, function(input, output, session) {
     
     # Reactive values
@@ -133,6 +133,38 @@ mod_geo_map_server <- function(id, biobank_filtered, lab_joined, lab_thresholds 
       }
       
       shp
+    })
+    
+    observeEvent(lab_joined(), {
+      lj <- lab_joined()
+      req(nrow(lj))
+      
+      zone_pos <- lj %>%
+        dplyr::mutate(
+          PCR = dplyr::if_else(PCR_pos, 1L, 0L, 0L),
+          ELISA = dplyr::if_else(dplyr::coalesce(ELISA_PE_pos, FALSE) | dplyr::coalesce(ELISA_VSG_pos, FALSE), 1L, 0L),
+          iELISA = dplyr::if_else(iELISA_pos, 1L, 0L, 0L)
+        ) %>%
+        dplyr::group_by(zone) %>%
+        dplyr::summarise(
+          n_samples = dplyr::n(),
+          n_pcr_pos = sum(PCR, na.rm = TRUE),
+          n_elisa_pos = sum(ELISA, na.rm = TRUE),
+          n_ielisa_pos = sum(iELISA, na.rm = TRUE),
+          .groups = "drop"
+        )
+      
+      # join to your health-zone polygons (sf object `zones_sf` with a "zone" col)
+      zsf <- zones_sf %>%
+        dplyr::left_join(zone_pos, by = "zone") %>%
+        dplyr::mutate(
+          n_pcr_pos = dplyr::coalesce(n_pcr_pos, 0L),
+          n_elisa_pos = dplyr::coalesce(n_elisa_pos, 0L),
+          n_ielisa_pos = dplyr::coalesce(n_ielisa_pos, 0L)
+        )
+      
+      # then add three choropleth layers with addPolygons(..., group="PCR Positives") etc,
+      # and a LayersControl so the user can toggle PCR / ELISA / iELISA.
     })
     
     # Update column selectors
