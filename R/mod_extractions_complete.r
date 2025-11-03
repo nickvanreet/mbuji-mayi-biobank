@@ -108,9 +108,24 @@ mod_extractions_qc_ui <- function(id) {
 #' @param biobank_clean Reactive containing cleaned biobank data
 #' @param config Reactive containing app configuration
 #' @export
+qc_normalise_path <- function(path) {
+  if (is.null(path) || !length(path)) return(path)
+  if (length(path) > 1) path <- paste(path, collapse = "")
+  if (is.na(path)) return(NA_character_)
+  path <- trimws(path)
+  if (!nzchar(path)) return("")
+
+  if (exists("safe_path", mode = "function")) {
+    out <- tryCatch(safe_path(path), error = function(e) path)
+    if (is.null(out) || !nzchar(out)) return(path)
+    return(out)
+  }
+  path
+}
+
 mod_extractions_qc_server <- function(id, biobank_clean, config) {
   shiny::moduleServer(id, function(input, output, session) {
-    
+
     # Reactive values
     extraction_raw <- shiny::reactiveVal(tibble::tibble())
     extraction_status <- shiny::reactiveVal("No extraction data loaded.")
@@ -119,8 +134,8 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     shiny::observe({
       cfg <- config()
       if (!is.null(cfg) && "paths" %in% names(cfg)) {
-        shiny::updateTextInput(session, "qc_dir", 
-                               value = cfg$paths$extractions_dir)
+        shiny::updateTextInput(session, "qc_dir",
+                               value = qc_normalise_path(cfg$paths$extractions_dir))
       }
       if (!is.null(cfg) && "qc" %in% names(cfg)) {
         shiny::updateSliderInput(session, "qc_rng",
@@ -132,12 +147,12 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     # Load extractions
     shiny::observeEvent(input$qc_refresh, {
       shiny::withProgress(message = 'Loading extractions...', value = 0, {
-        dir <- input$qc_dir
-        
-        if (!dir.exists(dir)) {
+        dir <- qc_normalise_path(input$qc_dir)
+
+        if (is.null(dir) || is.na(dir) || !nzchar(dir) || !dir.exists(dir)) {
           extraction_status("Directory not found. Check the path.")
           extraction_raw(tibble::tibble())
-          shiny::showNotification("Extraction directory does not exist.", 
+          shiny::showNotification("Extraction directory does not exist.",
                                    type = "error")
           return()
         }
@@ -772,6 +787,10 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
 #' @param dir_extraction Directory path
 #' @return Tibble with extraction data
 read_extractions_dir <- function(dir_extraction) {
+  dir_extraction <- qc_normalise_path(dir_extraction)
+  if (is.null(dir_extraction) || is.na(dir_extraction) || !nzchar(dir_extraction)) {
+    return(tibble::tibble())
+  }
   if (!dir.exists(dir_extraction)) return(tibble::tibble())
   
   files <- list.files(dir_extraction, pattern = "\\.xlsx?$", full.names = TRUE)
