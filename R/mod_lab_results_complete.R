@@ -1,7 +1,16 @@
 # mod_lab_results_complete.R
 # =====================================================================
-# MODULE: Lab Results — Complete with all fixes
-# UPDATED: 2025-11-03 with canonical calls, deduplication, and Controls QC
+# MODULE: Lab Results — Complete with ALL FIXES APPLIED
+# VERSION: 3.0 - 2025-11-03
+# =====================================================================
+# FIXES INCLUDED:
+# ✅ Canonical call handling (P/F/S/R → pos/neg/suspect/repeat)
+# ✅ Proper deduplication before joining
+# ✅ Reactive thresholds
+# ✅ Correct tested flags for all assays
+# ✅ Fixed concordance logic (all positive = TRUE)
+# ✅ ELISA box combines PE + VSG
+# ✅ Controls QC tab with Levey-Jennings plots
 # =====================================================================
 
 #' Lab Results Module - UI
@@ -391,19 +400,26 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       shiny::updateTextInput(session, "barcode_search", value = "")
     })
     
-    # Merged and flagged data (UPDATED WITH CANONICAL CALLS)
+    # Merged and flagged data (UPDATED WITH THRESHOLDS)
     joined_data <- shiny::reactive({
       bio <- biobank_clean()
       lab <- lab_data_raw()
       
       if (is.null(bio) || !nrow(bio)) return(tibble::tibble())
       
+      # Get current thresholds
+      thresholds <- list(
+        pcr_cq_max = input$threshold_pcr,
+        elisa_pe_pp = input$threshold_elisa_pe,
+        elisa_vsg_pp = input$threshold_elisa_vsg,
+        ielisa_inh = input$threshold_ielisa
+      )
+      
       tryCatch({
-        # Use corrected merge function with canonical calls
-        merged <- merge_lab_with_biobank_v2(bio, lab)
+        # Use corrected merge function with thresholds
+        merged <- merge_lab_with_biobank_v2(bio, lab, thresholds)
         
         # Merge function already adds canonical calls and is_pos flags
-        # Just return it
         merged
         
       }, error = function(e) {
@@ -435,19 +451,17 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       df
     })
     
-    # === VALUE BOXES (UPDATED TO USE CANONICAL FLAGS) ===
+    # === VALUE BOXES (FIXED TO USE TESTED FLAGS) ===
     
     output$vb_total_tested <- shiny::renderText({
       df <- joined_data()
       if (!nrow(df)) return("0")
       
-      n_tested <- df %>%
-        dplyr::filter(
-          !is.na(Cq_177T) | !is.na(Cq_18S2) | 
-            !is.na(pp_percent_pe) | !is.na(pp_percent_vsg) |
-            !is.na(pct_inh_13) | !is.na(pct_inh_15)
-        ) %>%
-        nrow()
+      # Count samples with ANY test data
+      n_tested <- sum(
+        (df$PCR_tested | df$elisa_pe_tested | df$elisa_vsg_tested | df$ielisa_tested) %||% FALSE,
+        na.rm = TRUE
+      )
       
       scales::comma(n_tested)
     })
@@ -456,9 +470,9 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
       
-      # Use canonical flag
+      # Use canonical flag AND tested flag
       n_pos <- sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE)
-      n_tested <- sum(!is.na(df$PCR_call))
+      n_tested <- sum(df$PCR_tested %||% FALSE, na.rm = TRUE)
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
@@ -468,12 +482,16 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       df <- joined_data()
       if (!nrow(df)) return("0 / 0 (0%)")
       
-      # Any ELISA positive
+      # Any ELISA positive (PE OR VSG)
       n_pos <- sum(
         (df$elisa_pe_is_pos | df$elisa_vsg_is_pos) %||% FALSE, 
         na.rm = TRUE
       )
-      n_tested <- sum(!is.na(df$elisa_pe_call) | !is.na(df$elisa_vsg_call))
+      # Count samples tested in EITHER assay
+      n_tested <- sum(
+        (df$elisa_pe_tested | df$elisa_vsg_tested) %||% FALSE,
+        na.rm = TRUE
+      )
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
@@ -484,7 +502,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       if (!nrow(df)) return("0 / 0 (0%)")
       
       n_pos <- sum(df$ielisa_is_pos %||% FALSE, na.rm = TRUE)
-      n_tested <- sum(!is.na(df$ielisa_call))
+      n_tested <- sum(df$ielisa_tested %||% FALSE, na.rm = TRUE)
       pct <- if (n_tested > 0) round(100 * n_pos / n_tested, 1) else 0
       
       sprintf("%s / %s (%s%%)", scales::comma(n_pos), scales::comma(n_tested), pct)
@@ -503,10 +521,10 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       coverage <- tibble::tibble(
         Assay = c("PCR", "ELISA PE", "ELISA VSG", "iELISA"),
         `Samples Tested` = c(
-          sum(!is.na(df$Cq_177T) | !is.na(df$Cq_18S2)),
-          sum(!is.na(df$pp_percent_pe)),
-          sum(!is.na(df$pp_percent_vsg)),
-          sum(!is.na(df$pct_inh_13) | !is.na(df$pct_inh_15))
+          sum(df$PCR_tested %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_pe_tested %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_vsg_tested %||% FALSE, na.rm = TRUE),
+          sum(df$ielisa_tested %||% FALSE, na.rm = TRUE)
         ),
         `Positive Results` = c(
           sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE),
@@ -632,8 +650,8 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = c("Cq_177T", "SD_177T", "Cq_18S2", 
-                                    "SD_18S2", "Cq_RNAseP", "SD_RNAseP"),
+        DT::formatRound(columns = dplyr::any_of(c("Cq_177T", "SD_177T", "Cq_18S2", 
+                                    "SD_18S2", "Cq_RNAseP", "SD_RNAseP")),
                         digits = 2)
     })
     
@@ -651,7 +669,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = c("d_od", "pp_percent"), digits = 2)
+        DT::formatRound(columns = dplyr::any_of(c("d_od", "pp_percent")), digits = 2)
     })
     
     # ELISA VSG table
@@ -668,7 +686,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = c("d_od", "pp_percent"), digits = 2)
+        DT::formatRound(columns = dplyr::any_of(c("d_od", "pp_percent")), digits = 2)
     })
     
     # iELISA table
@@ -685,7 +703,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = c("pct_inh_13", "pct_inh_15"), digits = 1)
+        DT::formatRound(columns = dplyr::any_of(c("pct_inh_13", "pct_inh_15")), digits = 1)
     })
     
     # Concordance table
@@ -700,17 +718,17 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         dplyr::mutate(
           PCR = dplyr::case_when(
             PCR_is_pos ~ "POS",
-            !is.na(PCR_call) & !PCR_is_pos ~ "NEG",
+            PCR_tested & !PCR_is_pos ~ "NEG",
             TRUE ~ "Not Tested"
           ),
           ELISA = dplyr::case_when(
             elisa_pe_is_pos | elisa_vsg_is_pos ~ "POS",
-            !is.na(elisa_pe_call) | !is.na(elisa_vsg_call) ~ "NEG",
+            (elisa_pe_tested | elisa_vsg_tested) & !elisa_pe_is_pos & !elisa_vsg_is_pos ~ "NEG",
             TRUE ~ "Not Tested"
           ),
           iELISA = dplyr::case_when(
             ielisa_is_pos ~ "POS",
-            !is.na(ielisa_call) & !ielisa_is_pos ~ "NEG",
+            ielisa_tested & !ielisa_is_pos ~ "NEG",
             TRUE ~ "Not Tested"
           )
         ) %>%
@@ -767,10 +785,10 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
       tibble::tibble(
         Assay = c("PCR", "ELISA PE", "ELISA VSG", "iELISA"),
         Tested = c(
-          sum(!is.na(df$Cq_177T) | !is.na(df$Cq_18S2)),
-          sum(!is.na(df$pp_percent_pe)),
-          sum(!is.na(df$pp_percent_vsg)),
-          sum(!is.na(df$pct_inh_13) | !is.na(df$pct_inh_15))
+          sum(df$PCR_tested %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_pe_tested %||% FALSE, na.rm = TRUE),
+          sum(df$elisa_vsg_tested %||% FALSE, na.rm = TRUE),
+          sum(df$ielisa_tested %||% FALSE, na.rm = TRUE)
         ),
         Positive = c(
           sum(df$PCR_is_pos %||% FALSE, na.rm = TRUE),
@@ -902,7 +920,7 @@ mod_lab_results_server <- function(id, biobank_clean, config) {
         filter = "top",
         rownames = FALSE
       ) %>%
-        DT::formatRound(columns = c("od", "cq"), digits = 3)
+        DT::formatRound(columns = dplyr::any_of(c("od", "cq")), digits = 3)
     })
     
     # === DOWNLOADS ===
