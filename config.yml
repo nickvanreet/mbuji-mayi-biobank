@@ -10,11 +10,8 @@ paths:
   ielisa_dir: "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/06 - iELISA/0602 - Résultats iELISA"
 
 map:
-  use_grid3_online: true
-  grid3_url: "https://services3.arcgis.com/BU6Aadhn6tbBEdyk/arcgis/rest/services/GRID3_COD_health_zones_v7_0/FeatureServer/0/query?where=1%3D1&outFields=province,zonesante&outSR=4326&f=geojson"
-  province_field_regex: "(?i)prov"
-  zone_field_regex: "(?i)zone|zs|zonesante"
-  fallback_shapefile: "testdata/grid3_health_zones.gpkg"
+  use_grid3_online: false
+  fallback_shapefile: "testdata/cod_kasai_lomami_health_zones.gpkg"
 
 qc:
   drs_target_ml: 2.0
