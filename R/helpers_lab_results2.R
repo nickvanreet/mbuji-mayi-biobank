@@ -363,7 +363,7 @@ detect_control_type <- function(x) {
   dplyr::case_when(
     !nzchar(lab) ~ "Unknown",
     grepl("neg|nc|blank|ntc", lab) ~ "Negative",
-    grepl("pos|pc|control\+", lab) ~ "Positive",
+    grepl("pos|pc|control\\+", lab) ~ "Positive",
     TRUE ~ "Unknown"
   )
 }
