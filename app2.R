@@ -129,6 +129,7 @@ load_config <- function() {
 # --- UTILITIES / MODULES (must be available before UI) ----------------------
 source("R/utils_parse.R", local = TRUE)
 source("R/utils_join.R", local = TRUE)
+source("R/mod_lab_results_complete.R", local = TRUE)  # This module
 source("R/helpers_lab_corrected.R", local = TRUE)  # PCR/iELISA parsing
 source("R/helpers_lab_results2.R", local = TRUE)  # Canonical calls
 source("R/helpers_lab_merge.R", local = TRUE)     # Corrected merge
