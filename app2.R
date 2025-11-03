@@ -131,8 +131,8 @@ source("R/utils_parse.R",            local = TRUE)
 source("R/utils_join.R",             local = TRUE)
 source("R/mod_geo_map_complete.R",   local = TRUE)
 source("R/mod_extractions_complete.R", local = TRUE)
-source("R/helpers_lab_results2.R",   local = TRUE)
-source("R/mod_lab_results2.R",       local = TRUE)
+source("R/helpers_lab_complete.R", local = TRUE)
+source("R/mod_lab_results_complete.R", local = TRUE)
 
 # --- HELPERS FOR THIS APP ----------------------------------------------------
 clean_biobank_data <- function(df) {
@@ -298,7 +298,7 @@ ui <- page_navbar(
   nav_panel(title = "Extraction QC", mod_extractions_qc_ui("extractions_qc")),
   
   # === LAB RESULTS TAB ===
-  nav_panel(title = "Lab Results",   mod_lab_results2_ui("lab_results")),
+  nav_panel(title = "Lab Results", mod_lab_results_ui("lab_results")),
   
   # === DATA TAB ===
   nav_panel(
@@ -448,24 +448,25 @@ server <- function(input, output, session) {
     df
   })
 
-  # --- MODULES -------------------------------------------------------------
-  lab_modules <- mod_lab_results2_server(
+  # === LAB RESULTS MODULE (replaces old version) ===
+  lab_modules <- mod_lab_results_server(
     "lab_results",
     biobank_clean = clean_data,
     config = cfg
   )
-
+  
+  # === EXTRACTIONS MODULE ===
   mod_extractions_qc_server(
     "extractions_qc",
     biobank_clean = clean_data,
     config = cfg
   )
-
+  
+  # === GEOGRAPHY MODULE (uses lab results) ===
   mod_geo_map_server(
     "geo_map",
     biobank_filtered = filtered_data,
-    joined_data = lab_modules$lab_joined,
-    lab_thresholds = lab_modules$thresholds,
+    lab_joined = lab_modules$lab_joined,  # <-- Important: uses lab data
     config = cfg
   )
   
