@@ -385,7 +385,7 @@ mod_lab_results2_server <- function(id, biobank_clean, config) {
     })
 
     output$qc_ielisa <- DT::renderDT({
-      df <- summarise_ielisa_controls(joined(), thresholds()$ielisa)
+      df <- summarise_ielisa_controls(lab_data()$ielisa, thresholds()$ielisa)
       shiny::validate(shiny::need(nrow(df) > 0, "No iELISA control rows detected."))
       pal <- status_palette(df$Status)
       DT::datatable(df, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) %>%
