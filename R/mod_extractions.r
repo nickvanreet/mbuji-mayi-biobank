@@ -238,9 +238,9 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     shiny::observe({
       df <- extractions_dedup()
       if (is.null(df) || !nrow(df) || !"province" %in% names(df)) {
-        shiny::updateSelectInput(session, "qc_prov",
+        shiny::updateSelectInput(session, "qc_prov", 
                                  choices = "All", selected = "All")
-        shiny::updateSelectInput(session, "qc_zone",
+        shiny::updateSelectInput(session, "qc_zone", 
                                  choices = "All", selected = "All")
         return()
       }
@@ -269,7 +269,7 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
     shiny::observe({
       df <- extractions_dedup()
       if (is.null(df) || !nrow(df) || !"zone" %in% names(df)) {
-        shiny::updateSelectInput(session, "qc_zone",
+        shiny::updateSelectInput(session, "qc_zone", 
                                  choices = "All", selected = "All")
         return()
       }
@@ -299,31 +299,27 @@ mod_extractions_qc_server <- function(id, biobank_clean, config) {
       shiny::req(df)
 
       if (!nrow(df)) return(tibble::tibble())
-
+      
       # Province filter
       if (!is.null(input$qc_prov) && input$qc_prov != "All") {
-        if ("province" %in% names(df)) {
-          filtered <- df %>% dplyr::filter(province == input$qc_prov)
-          if (nrow(filtered)) df <- filtered
-        }
+        df <- df %>% 
+          dplyr::filter(!is.na(province) & province == input$qc_prov)
       }
-
+      
       # Zone filter
       if (!is.null(input$qc_zone) && input$qc_zone != "All") {
-        if ("zone" %in% names(df)) {
-          filtered <- df %>% dplyr::filter(zone == input$qc_zone)
-          if (nrow(filtered)) df <- filtered
-        }
+        df <- df %>% 
+          dplyr::filter(!is.na(zone) & zone == input$qc_zone)
       }
-
+      
       # Date filter
       if (!is.null(input$qc_date_rng) && length(input$qc_date_rng) == 2) {
         dr <- as.Date(input$qc_date_rng)
-        if (all(!is.na(dr)) && "date_prelev" %in% names(df)) {
-          filtered <- df %>%
-            dplyr::filter(is.na(date_prelev) |
-                            (date_prelev >= dr[1] & date_prelev <= dr[2]))
-          if (nrow(filtered)) df <- filtered
+        if (all(!is.na(dr))) {
+          df <- df %>%
+            dplyr::filter(!is.na(date_prelev) &
+                            date_prelev >= dr[1] &
+                            date_prelev <= dr[2])
         }
       }
       
