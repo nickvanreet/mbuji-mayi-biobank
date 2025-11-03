@@ -131,7 +131,7 @@ source("R/utils_parse.R",            local = TRUE)
 source("R/utils_join.R",             local = TRUE)
 source("R/mod_geo_map_complete.R",   local = TRUE)
 source("R/mod_extractions_complete.R", local = TRUE)
-source("R/helpers_lab_complete.R", local = TRUE)
+source("R/helpers_lab_corrected.R", local = TRUE)
 source("R/mod_lab_results_complete.R", local = TRUE)
 
 # --- HELPERS FOR THIS APP ----------------------------------------------------
