@@ -127,12 +127,13 @@ load_config <- function() {
 }
 
 # --- UTILITIES / MODULES (must be available before UI) ----------------------
-source("R/utils_parse.R",            local = TRUE)
-source("R/utils_join.R",             local = TRUE)
-source("R/mod_geo_map_complete.R",   local = TRUE)
+source("R/utils_parse.R", local = TRUE)
+source("R/utils_join.R", local = TRUE)
+source("R/helpers_lab_corrected.R", local = TRUE)  # PCR/iELISA parsing
+source("R/helpers_lab_results2.R", local = TRUE)  # Canonical calls
+source("R/helpers_lab_merge.R", local = TRUE)     # Corrected merge
+source("R/mod_geo_map_complete.R", local = TRUE)
 source("R/mod_extractions_complete.R", local = TRUE)
-source("R/helpers_lab_corrected.R", local = TRUE)
-source("R/mod_lab_results_complete.R", local = TRUE)
 
 # --- HELPERS FOR THIS APP ----------------------------------------------------
 clean_biobank_data <- function(df) {
@@ -515,46 +516,41 @@ server <- function(input, output, session) {
   })
   
   output$plot_study_dist <- renderPlot({
-    df <- filtered_data(); req(df)
-    tab <- df %>%
-      dplyr::mutate(
-        study = as.character(study),
-        study = dplyr::case_when(
-          is.na(study) | !nzchar(study) ~ "Unknown",
-          study %in% c("DA", "DP") ~ study,
-          TRUE ~ "Other"
-        ),
-        study = factor(study, levels = c("DA", "DP", "Other", "Unknown"))
-      ) %>%
-      dplyr::count(study, name = "n")
-
-    shiny::validate(shiny::need(nrow(tab) > 0, "No samples available for study distribution."))
-
-    total <- sum(tab$n)
-    tab <- tab %>%
-      dplyr::mutate(pct = if (total > 0) n / total * 100 else 0)
-
-    fill_values <- c(
-      DA = "#3498DB",
-      DP = "#27AE60",
-      Other = "#8E44AD",
-      Unknown = "#95A5A6"
-    )
-
-    ggplot(tab, aes(x = "", y = n, fill = study)) +
-      geom_col(width = 1, color = "white", size = 1.2) +
-      geom_text(
-        data = dplyr::filter(tab, n > 0),
-        aes(label = sprintf("%s\n%.1f%%", scales::comma(n), pct)),
-        position = position_stack(vjust = 0.5),
-        color = "white", fontface = "bold", size = 4
-      ) +
-      coord_polar("y") +
-      scale_fill_manual(values = fill_values, drop = FALSE) +
-      labs(fill = "Study") +
-      theme_void() +
-      theme(legend.position = "right")
-  })
+  df <- filtered_data(); req(df)
+  
+  tab <- df %>%
+    dplyr::mutate(
+      study = as.character(study),
+      study = dplyr::case_when(
+        is.na(study) | !nzchar(study) ~ "Unknown",
+        study %in% c("DA", "DP") ~ study,
+        TRUE ~ "Other"
+      ),
+      study = factor(study, levels = c("DA", "DP", "Other", "Unknown"))
+    ) %>%
+    dplyr::count(study, name = "n")
+  
+  shiny::validate(shiny::need(nrow(tab) > 0, "No samples available"))
+  
+  total <- sum(tab$n)
+  tab <- tab %>% dplyr::mutate(pct = if (total > 0) n / total * 100 else 0)
+  
+  fill_values <- c(DA = "#3498DB", DP = "#27AE60", Other = "#8E44AD", Unknown = "#95A5A6")
+  
+  ggplot(tab, aes(x = "", y = n, fill = study)) +
+    geom_col(width = 1, color = "white", linewidth = 1.2) +  # FIXED: linewidth instead of size
+    geom_text(
+      data = dplyr::filter(tab, n > 0),
+      aes(label = sprintf("%s\n%.1f%%", scales::comma(n), pct)),
+      position = position_stack(vjust = 0.5),
+      color = "white", fontface = "bold", size = 4  # size OK here (in geom)
+    ) +
+    coord_polar("y") +
+    scale_fill_manual(values = fill_values, drop = FALSE) +  # NO size= here
+    labs(fill = "Study") +
+    theme_void() +
+    theme(legend.position = "right")
+})
 
   output$plot_pyramid <- renderPlot({
     df <- filtered_data(); req(df)
