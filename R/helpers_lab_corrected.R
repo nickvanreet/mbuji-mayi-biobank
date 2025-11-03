@@ -59,30 +59,24 @@ parse_pcr_results <- function(dir) {
       srna <- summarise_target_long(path, "RNAseP", "RNAseP")
       
       # Join all together
-    result <- call_df %>%
-      dplyr::left_join(s177, by = "sample") %>%
-      dplyr::left_join(s18, by = "sample") %>%
-      dplyr::left_join(srna, by = "sample") %>%
-      dplyr::rename(lab_id = sample) %>%
-      dplyr::mutate(
-        source_file = basename(path),
-        # ADD: Extract run date from filename
-        run_date = extract_file_date(basename(path)),
-        run_id = extract_run_letter(basename(path)),
-        # Convert Cq values
-        across(starts_with("Cq_"), ~ suppressWarnings(as.numeric(.))),
-        across(starts_with("SD_"), ~ suppressWarnings(as.numeric(.)))
-      )
-    
-    message("  Extracted ", nrow(result), " samples from ", basename(path), 
-            " (date: ", run_date[1], ")")
-    
-    result
-  }, error = function(e) {
-    warning("Failed to process PCR file ", basename(path), ": ", e$message)
-    tibble::tibble()
-  })
-}
+      result <- call_df %>%
+        dplyr::left_join(s177, by = "sample") %>%
+        dplyr::left_join(s18, by = "sample") %>%
+        dplyr::left_join(srna, by = "sample") %>%
+        dplyr::rename(lab_id = sample) %>%
+        dplyr::mutate(
+          source_file = basename(path),
+          # Convert Cq values
+          across(starts_with("Cq_"), ~ suppressWarnings(as.numeric(.))),
+          across(starts_with("SD_"), ~ suppressWarnings(as.numeric(.)))
+        )
+      
+      result
+    }, error = function(e) {
+      warning("Failed to process PCR file ", basename(path), ": ", e$message)
+      tibble::tibble()
+    })
+  }
   
   # Process all files
   pcr_data <- purrr::map_dfr(files, make_qpcr_summary)
