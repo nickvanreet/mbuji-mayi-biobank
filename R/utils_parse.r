@@ -217,6 +217,10 @@ is_positive_result <- function(x) {
   grepl("POS|POSITIF|DETECT", x_clean)
 }
 
+#' Parse yes/no/uncertain responses
+#' @param x Vector of response text
+#' @return Factor with levels Oui, Non, Incertain
+#' @export
 parse_yes_no_uncertain <- function(x) {
   if (is.null(x) || length(x) == 0) return(factor(levels = c("Oui", "Non", "Incertain")))
   
@@ -231,4 +235,67 @@ parse_yes_no_uncertain <- function(x) {
   )
   
   factor(result, levels = c("Oui", "Non", "Incertain"))
+}
+
+#' Calculate conservation time with fallback dates
+#' Priority: date_treatment → date_received → date_inrb
+#' @param date_treatment Lab treatment date (primary)
+#' @param date_sample Sample collection date
+#' @param date_received Fallback: reception date
+#' @param date_inrb Fallback: INRB arrival date
+#' @param max_ok Maximum reasonable days
+#' @return Numeric vector of conservation days
+#' @export
+calc_conservation_days <- function(date_treatment, date_sample, 
+                                    date_received = NULL, date_inrb = NULL, 
+                                    max_ok = 365) {
+  if (is.null(date_treatment) || is.null(date_sample)) {
+    return(rep(NA_real_, max(length(date_treatment), length(date_sample))))
+  }
+  
+  # Primary calculation: treatment - collection
+  days <- safe_days_between(date_treatment, date_sample, max_ok)
+  
+  # Fallback 1: Use reception date if treatment missing
+  if (!is.null(date_received)) {
+    missing <- is.na(days) & !is.na(date_received)
+    if (any(missing)) {
+      days[missing] <- safe_days_between(date_received[missing], 
+                                          date_sample[missing], max_ok)
+    }
+  }
+  
+  # Fallback 2: Use INRB arrival if still missing
+  if (!is.null(date_inrb)) {
+    missing <- is.na(days) & !is.na(date_inrb)
+    if (any(missing)) {
+      days[missing] <- safe_days_between(date_inrb[missing], 
+                                          date_sample[missing], max_ok)
+    }
+  }
+  
+  days
+}
+
+#' Detect if sample was shipped to INRB
+#' @param date_env_inrb Date sent to INRB
+#' @param status_field Optional status text field
+#' @return Logical vector
+#' @export
+parse_shipped_to_inrb <- function(date_env_inrb, status_field = NULL) {
+  if (is.null(date_env_inrb)) {
+    return(rep(NA, length(status_field) %||% 0))
+  }
+  
+  # Primary: check if shipment date exists
+  shipped <- !is.na(date_env_inrb)
+  
+  # Secondary: check status text if provided
+  if (!is.null(status_field)) {
+    status_clean <- toupper(trimws(as.character(status_field)))
+    status_indicates_shipped <- grepl("INRB|ENV.*INRB|SHIP.*INRB|SENT", status_clean)
+    shipped <- shipped | status_indicates_shipped
+  }
+  
+  shipped
 }
