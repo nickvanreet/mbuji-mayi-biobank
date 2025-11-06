@@ -445,30 +445,25 @@ ui <- page_navbar(
       textOutput("latest_arrival_date")
     ),
     
-    # >>> ADD THIS: Data Quality Check (moved to sidebar) <<<
     hr(),
     h5("Data Quality Check"),
+    # vertical, compact, sidebar-friendly
     card(
       card_body(
-        fluidRow(
-          column(4,
-                 div(style = "text-align: center; padding: 10px;",
-                     h4(textOutput("samples_loaded"), style = "margin: 0; color: #2C3E50;"),
-                     p("Loaded", style = "margin: 4px 0 0 0; color: #7F8C8D;")
-                 )
-          ),
-          column(4,
-                 div(style = "text-align: center; padding: 10px;",
-                     h4(textOutput("samples_used"), style = "margin: 0; color: #27AE60;"),
-                     p("Used", style = "margin: 4px 0 0 0; color: #7F8C8D;")
-                 )
-          ),
-          column(4,
-                 div(style = "text-align: center; padding: 10px;",
-                     h4(textOutput("samples_excluded"), style = "margin: 0; color: #E74C3C;"),
-                     p("Excluded", style = "margin: 4px 0 0 0; color: #7F8C8D;")
-                 )
-          )
+        div(
+          style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
+          span("Loaded"),
+          strong(textOutput("samples_loaded"))
+        ),
+        div(
+          style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
+          span("Used"),
+          strong(style = "color:#27AE60;", textOutput("samples_used"))
+        ),
+        div(
+          style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
+          span("Excluded"),
+          strong(style = "color:#E74C3C;", textOutput("samples_excluded"))
         )
       )
     ),
@@ -643,19 +638,18 @@ ui <- page_navbar(
   # === DEMOGRAPHICS TAB ====================================================
   nav_panel(
     title = "Demographics",
-    
     layout_columns(
       col_widths = c(12),
       card(
         card_header(
           div(
-            style = "display: flex; justify-content: space-between; align-items: center;",
+            style = "display:flex; justify-content:space-between; align-items:center;",
             span("Demographics & Case History"),
             downloadButton("download_demog_case", "Download Table", class = "btn-sm btn-outline-primary")
           )
         ),
-        p("Combined summary of age/sex and case history (current filters applied).",
-          style = "padding: 10px; color: #7F8C8D; margin: 0;"),
+        p("Combined summary of age/sex and case history (current filters vs full).",
+          style = "padding:10px; color:#7F8C8D; margin:0;"),
         tableOutput("table_demog_case_full")
       )
     )
@@ -989,44 +983,51 @@ server <- function(input, output, session) {
     sprintf("%.1f%%", kpi$pct_shipped_inrb)
   })
   
-  # ---- Combined Demographics + Case table helper -------------------------------
-  make_demog_case_tbl <- function(df) {
-    if (is.null(df) || !nrow(df)) return(tibble())
+  make_demog_case_tbl_compare <- function(df_filtered, df_full) {
+    if (is.null(df_full) || !nrow(df_full)) return(tibble())
     
-    # Demographics
-    age_vec <- df %>% filter(!is.na(age_num)) %>% pull(age_num)
-    n_total <- nrow(df)
-    n_age   <- length(age_vec)
-    
-    n_m <- sum(df$sex == "M", na.rm = TRUE)
-    n_f <- sum(df$sex == "F", na.rm = TRUE)
-    n_sex_unknown <- sum(is.na(df$sex))
-    
-    pct_f_known <- if ((n_m + n_f) > 0) n_f / (n_m + n_f) else NA_real_
-    
-    # Case history
-    df_proc <- df %>%
-      mutate(
-        ancien_cas_clean = case_when(
-          is.na(ancien_cas) | ancien_cas == "" ~ "Unknown",
-          TRUE ~ as.character(ancien_cas)
-        ),
-        traite_clean = case_when(
-          is.na(traite) | traite == "" ~ "Unknown",
-          TRUE ~ as.character(traite)
-        ),
-        case_combo = case_when(
-          ancien_cas_clean == "Oui" | traite_clean == "Oui" ~ "Previous/Treated",
-          ancien_cas_clean == "Non" & traite_clean == "Non" ~ "New patient",
-          TRUE ~ "Unknown"
-        )
+    # helpers
+    sex_counts <- function(df) {
+      tibble(
+        Male   = sum(df$sex == "M", na.rm = TRUE),
+        Female = sum(df$sex == "F", na.rm = TRUE),
+        Sex_Unknown = sum(is.na(df$sex))
       )
+    }
+    case_counts <- function(df) {
+      df %>%
+        mutate(
+          ancien_cas_clean = ifelse(is.na(ancien_cas) | ancien_cas == "", "Unknown", as.character(ancien_cas)),
+          traite_clean = ifelse(is.na(traite) | traite == "", "Unknown", as.character(traite)),
+          case_combo = case_when(
+            ancien_cas_clean == "Oui" | traite_clean == "Oui" ~ "Previous/Treated",
+            ancien_cas_clean == "Non" & traite_clean == "Non" ~ "New patient",
+            TRUE ~ "Unknown"
+          )
+        ) %>%
+        summarise(
+          Previous_Treated = sum(case_combo == "Previous/Treated", na.rm = TRUE),
+          New_Patient      = sum(case_combo == "New patient", na.rm = TRUE),
+          Case_Unknown     = sum(case_combo == "Unknown", na.rm = TRUE)
+        )
+    }
     
-    n_prev_treated <- sum(df_proc$case_combo == "Previous/Treated", na.rm = TRUE)
-    n_new          <- sum(df_proc$case_combo == "New patient", na.rm = TRUE)
-    n_case_unknown <- sum(df_proc$case_combo == "Unknown", na.rm = TRUE)
+    # filtered (respect current filters) — if none, treat as full
+    df_f <- df_filtered
+    if (is.null(df_f)) df_f <- df_full
     
-    # Assemble a single compact table
+    # age stats
+    a_full <- df_full$age_num[!is.na(df_full$age_num)]
+    a_filt <- df_f$age_num[!is.na(df_f$age_num)]
+    
+    sex_full <- sex_counts(df_full)
+    sex_filt <- sex_counts(df_f)
+    
+    case_full <- case_counts(df_full)
+    case_filt <- case_counts(df_f)
+    
+    pct_of_total <- function(x_filt, x_full) ifelse(x_full > 0, x_filt / x_full, NA_real_)
+    
     tibble::tibble(
       Metric = c(
         "Total samples",
@@ -1043,35 +1044,71 @@ server <- function(input, output, session) {
         "New patient",
         "Case status unknown"
       ),
-      Value = c(
-        scales::comma(n_total),
-        scales::comma(n_age),
-        if (n_age) sprintf("%.1f", median(age_vec, na.rm = TRUE)) else "—",
-        if (n_age) sprintf("%.1f", mean(age_vec, na.rm = TRUE)) else "—",
-        if (n_age) sprintf("%.0f–%.0f", min(age_vec, na.rm = TRUE), max(age_vec, na.rm = TRUE)) else "—",
-        if (n_age) sprintf("%.1f", sd(age_vec, na.rm = TRUE)) else "—",
-        scales::comma(n_m),
-        scales::comma(n_f),
-        scales::comma(n_sex_unknown),
-        if (!is.na(pct_f_known)) scales::percent(pct_f_known, accuracy = 0.1) else "—",
-        scales::comma(n_prev_treated),
-        scales::comma(n_new),
-        scales::comma(n_case_unknown)
+      Filtered = c(
+        nrow(df_f),
+        length(a_filt),
+        if (length(a_filt)) sprintf("%.1f", median(a_filt, na.rm = TRUE)) else "—",
+        if (length(a_filt)) sprintf("%.1f", mean(a_filt, na.rm = TRUE)) else "—",
+        if (length(a_filt)) sprintf("%.0f–%.0f", min(a_filt, na.rm = TRUE), max(a_filt, na.rm = TRUE)) else "—",
+        if (length(a_filt)) sprintf("%.1f", sd(a_filt, na.rm = TRUE)) else "—",
+        scales::comma(sex_filt$Male),
+        scales::comma(sex_filt$Female),
+        scales::comma(sex_filt$Sex_Unknown),
+        {
+          denom <- sex_filt$Male + sex_filt$Female
+          if (denom > 0) scales::percent(sex_filt$Female / denom, accuracy = 0.1) else "—"
+        },
+        scales::comma(case_filt$Previous_Treated),
+        scales::comma(case_filt$New_Patient),
+        scales::comma(case_filt$Case_Unknown)
+      ),
+      `Full Dataset` = c(
+        nrow(df_full),
+        length(a_full),
+        if (length(a_full)) sprintf("%.1f", median(a_full, na.rm = TRUE)) else "—",
+        if (length(a_full)) sprintf("%.1f", mean(a_full, na.rm = TRUE)) else "—",
+        if (length(a_full)) sprintf("%.0f–%.0f", min(a_full, na.rm = TRUE), max(a_full, na.rm = TRUE)) else "—",
+        if (length(a_full)) sprintf("%.1f", sd(a_full, na.rm = TRUE)) else "—",
+        scales::comma(sex_full$Male),
+        scales::comma(sex_full$Female),
+        scales::comma(sex_full$Sex_Unknown),
+        {
+          denom <- sex_full$Male + sex_full$Female
+          if (denom > 0) scales::percent(sex_full$Female / denom, accuracy = 0.1) else "—"
+        },
+        scales::comma(case_full$Previous_Treated),
+        scales::comma(case_full$New_Patient),
+        scales::comma(case_full$Case_Unknown)
+      ),
+      `% of Total` = c(
+        scales::percent(pct_of_total(nrow(df_f), nrow(df_full)), accuracy = 0.1),
+        scales::percent(pct_of_total(length(a_filt), length(a_full)), accuracy = 0.1),
+        "—","—","—","—",
+        scales::percent(pct_of_total(sex_filt$Male,   sex_full$Male),   accuracy = 0.1),
+        scales::percent(pct_of_total(sex_filt$Female, sex_full$Female), accuracy = 0.1),
+        if (sex_full$Sex_Unknown > 0)
+          scales::percent(pct_of_total(sex_filt$Sex_Unknown, sex_full$Sex_Unknown), accuracy = 0.1)
+        else "—",
+        "—",
+        scales::percent(pct_of_total(case_filt$Previous_Treated, case_full$Previous_Treated), accuracy = 0.1),
+        scales::percent(pct_of_total(case_filt$New_Patient,      case_full$New_Patient),      accuracy = 0.1),
+        scales::percent(pct_of_total(case_filt$Case_Unknown,     case_full$Case_Unknown),     accuracy = 0.1)
       )
     )
   }
   
-  # ---- Render + download the combined table ------------------------------------
   output$table_demog_case_full <- renderTable({
-    df <- filtered_data(); req(df)
-    make_demog_case_tbl(df)
+    df_full <- clean_data(); df_filt <- filtered_data()
+    req(df_full, nrow(df_full) > 0, df_filt)
+    make_demog_case_tbl_compare(df_filt, df_full)
   }, striped = TRUE, hover = TRUE, bordered = TRUE, spacing = "s")
   
   output$download_demog_case <- downloadHandler(
     filename = function() sprintf("demographics_case_%s.csv", format(Sys.Date(), "%Y%m%d")),
     content = function(file) {
-      df <- filtered_data(); req(df)
-      readr::write_csv(make_demog_case_tbl(df), file)
+      df_full <- clean_data(); df_filt <- filtered_data()
+      req(df_full, df_filt)
+      readr::write_csv(make_demog_case_tbl_compare(df_filt, df_full), file)
     }
   )
 
