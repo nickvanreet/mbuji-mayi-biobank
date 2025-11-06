@@ -142,6 +142,7 @@ source("R/helpers_controls_v2.R", local = TRUE)
 
                          
 # --- HELPERS FOR THIS APP (FIXED VERSION) ------------------------------------
+# Enhanced clean_biobank_data function with new fields
 clean_biobank_data <- function(df) {
   if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(tibble())
   
@@ -154,59 +155,99 @@ clean_biobank_data <- function(df) {
   df <- df %>%
     rename_first("barcode", "code.*barr|barcode") %>%
     rename_first("lab_id", "num[eé]ro|id.*lab") %>%
-    rename_first("date_raw", "date.*pr[eé]lev|date.*sample|^date$") %>%
+    rename_first("date_raw", "date.*pr[eé]lev|date.*sample|^date$|date_de_prelevement") %>%
     rename_first("age", "^age") %>%
     rename_first("sex", "^sex|^sexe|^gender") %>%
     rename_first("zone", "zone.*sant[eé]|health.*zone|^zs$") %>%
     rename_first("province", "^province") %>%
-    rename_first("study", "[eé]tude|study|passif|actif") %>%  # ✅ FIXED: look for étude
+    rename_first("study", "[eé]tude|study|passif|actif") %>%
     rename_first("structure", "structure.*sanit|facility") %>%
     rename_first("unit", "unit[eé].*mobile|mobile.*unit") %>%
     rename_first("date_received_raw", "date.*recept|date.*arriv") %>%
     rename_first("date_result_raw", "date.*result|result.*date") %>%
-    rename_first("date_env_cpltha_raw", "date.*env.*cpltha") %>%
+    rename_first("date_env_cpltha_raw", "date.*env.*cpltha|date_envoi_vers_cpltha") %>%
     rename_first("date_rec_cpltha_raw", "date.*recept.*cpltha") %>%
     rename_first("date_env_inrb_raw", "date.*env.*inrb") %>%
     rename_first("temp_transport_raw", "temp.*transport") %>%
-    rename_first("temp_cpltha_raw", "temp.*stockage|temp.*cpltha")
+    rename_first("temp_cpltha_raw", "temp.*stockage|temp.*cpltha") %>%
+    # ✅ NEW: Add ancien_cas and traite columns
+    rename_first("ancien_cas_raw", "ancien.*cas|previous.*case|old.*case") %>%
+    rename_first("traite_raw", "trait[eé]|treated|treatment")
   
   required <- c(
     "barcode","lab_id","date_raw","age","sex","zone","province","study",
     "structure","unit","date_received_raw","date_result_raw",
     "date_env_cpltha_raw","date_rec_cpltha_raw","date_env_inrb_raw",
-    "temp_transport_raw","temp_cpltha_raw"
+    "temp_transport_raw","temp_cpltha_raw",
+    "ancien_cas_raw","traite_raw"  # ✅ NEW
   )
   for (col in required) if (!col %in% names(df)) df[[col]] <- NA_character_
   
   df %>%
     mutate(
+      # === Date parsing ===
+      # Date prélèvement (sample collection date)
       date_sample     = parse_any_date(date_raw),
       date_received   = parse_any_date(date_received_raw),
       date_result     = parse_any_date(date_result_raw),
+      # Date envoi vers CPLTHA (shipment to lab)
       date_env_cpltha = parse_any_date(date_env_cpltha_raw),
       date_rec_cpltha = parse_any_date(date_rec_cpltha_raw),
       date_env_inrb   = parse_any_date(date_env_inrb_raw),
       
+      # === Demographic parsing ===
       age_num = parse_age(age),
       sex     = parse_sex_code(sex),
-      study   = parse_study_code(study),  # ✅ This converts DA/DP properly
+      study   = parse_study_code(study),
       
+      # === Temperature codes ===
       temp_field = parse_temp_code(temp_transport_raw),
       temp_hs    = parse_temp_code(temp_cpltha_raw),
       
+      # === Transport times (days between dates) ===
+      # Field → Health Structure (max 30 days)
       transport_field_hs = safe_days_between(date_env_cpltha, date_sample, 30),
+      # Health Structure → Lab Surveillance District (max 30 days)
       transport_hs_lsd   = safe_days_between(date_rec_cpltha, date_env_cpltha, 30),
+      # Lab Surveillance District → INRB (max 90 days)
       transport_lsd_inrb = safe_days_between(date_env_inrb,   date_rec_cpltha, 90),
       
+      # ✅ NEW: Transport time from field to CPLTHA
+      # = Date envoi vers CPLTHA - Date prélèvement
+      # This is the time from sample collection to shipping to central lab
+      # Critical for cold chain quality monitoring
+      transport_field_cpltha = safe_days_between(date_env_cpltha, date_sample, max_ok = 90),
+      
+      # === Text standardization ===
       zone      = stringr::str_squish(as.character(zone)),
       province  = stringr::str_squish(as.character(province)),
       structure = stringr::str_squish(as.character(structure)),
-      unit      = stringr::str_squish(as.character(unit))
+      unit      = stringr::str_squish(as.character(unit)),
+      
+      # ✅ NEW: Parse ancien_cas (previous case status)
+      # Oui = Previously diagnosed case
+      # Non = New case
+      # Incertain = Uncertain/Unknown
+      # NA = No information provided
+      ancien_cas = parse_yes_no_uncertain(ancien_cas_raw),
+      
+      # ✅ NEW: Parse traite (treatment status)
+      # Oui = Previously treated
+      # Non = Treatment-naive
+      # Incertain = Uncertain/Unknown
+      # NA = No information provided
+      traite = parse_yes_no_uncertain(traite_raw)
     ) %>%
+    # CRITICAL: Remove samples without valid collection date
+    # This is the primary deduplication and QC filter
+    # Samples loaded counter = rows remaining after this filter
     dplyr::filter(!is.na(date_sample)) %>%
-    dplyr::distinct(barcode, lab_id, .keep_all = TRUE)  # ✅ FIXED: dedup here
+    # CRITICAL: Deduplicate by (barcode, lab_id) pair
+    # Keeps only the first occurrence of each unique sample
+    # Handles cases where same sample has multiple specimen types
+    # Example: Same patient sample with serum + plasma = counted as 1 sample
+    dplyr::distinct(barcode, lab_id, .keep_all = TRUE)
 }
-
 
 make_age_groups <- function(age, width = 5) {
   if (all(is.na(age))) return(factor(levels = character()))
@@ -274,8 +315,54 @@ ui <- page_navbar(
       card(card_header("Demographics Summary"), tableOutput("table_demographics")),
       card(card_header("Geographic Coverage"),  tableOutput("table_geography")),
       card(card_header("Top Contributing Sites"), tableOutput("table_top_sites"))
-    )
-  ),
+    ),
+    # After the Overview value boxes, add new metadata summary card:
+    
+    layout_columns(
+      col_widths = c(12),
+      card(
+        card_header("Sample Metadata Summary"),
+        layout_columns(
+          col_widths = c(3, 3, 3, 3),
+           
+          # Ancien cas breakdown
+          card(
+            card_header("Ancien Cas (Previous Cases)", class = "bg-info text-white"),
+            tableOutput("table_ancien_cas")
+          ),
+          
+          # Traité breakdown
+          card(
+            card_header("Traité (Treatment Status)", class = "bg-success text-white"),
+            tableOutput("table_traite")
+          ),
+          
+          # Transport time summary
+          card(
+            card_header("Transport Time (Field→CPLTHA)", class = "bg-warning text-white"),
+            tableOutput("table_transport_time")
+          ),
+
+# Insert this as a new card in the Overview tab:
+ 
+     card(
+       card_header("Transport Time Distribution (Field → CPLTHA)"),
+       plotOutput("plot_transport_time", height = 300)
+     ),
+          
+          # Latest sample date
+          card(
+            card_header("Latest Sample Date", class = "bg-primary text-white"),
+            div(
+              style = "padding: 20px; text-align: center;",
+              h3(textOutput("latest_sample_date"), style = "margin: 0;")
+            )
+          )
+        )
+      )
+    ),
+
+
   
   # === DEMOGRAPHICS TAB ===
   nav_panel(
@@ -537,6 +624,267 @@ server <- function(input, output, session) {
     df
   })
 
+output$table_ancien_cas <- renderTable({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  # Count breakdown
+  summary <- df %>%
+    mutate(
+      status = case_when(
+        is.na(ancien_cas) ~ "Unknown (no data)",
+        ancien_cas == "Oui" ~ "Oui (Previous case)",
+        ancien_cas == "Non" ~ "Non (New case)",
+        ancien_cas == "Incertain" ~ "Incertain (Uncertain)",
+        TRUE ~ "Other"
+      )
+    ) %>%
+    count(status) %>%
+    mutate(
+      Percent = sprintf("%.1f%%", n / sum(n) * 100)
+    ) %>%
+    arrange(desc(n)) %>%
+    rename(Status = status, Count = n)
+  
+  summary
+}, striped = TRUE, hover = TRUE, bordered = TRUE)
+
+
+output$table_traite <- renderTable({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  summary <- df %>%
+    mutate(
+      status = case_when(
+        is.na(traite) ~ "Unknown (no data)",
+        traite == "Oui" ~ "Oui (Treated)",
+        traite == "Non" ~ "Non (Treatment-naive)",
+        traite == "Incertain" ~ "Incertain (Uncertain)",
+        TRUE ~ "Other"
+      )
+    ) %>%
+    count(status) %>%
+    mutate(
+      Percent = sprintf("%.1f%%", n / sum(n) * 100)
+    ) %>%
+    arrange(desc(n)) %>%
+    rename(Status = status, Count = n)
+  
+  summary
+}, striped = TRUE, hover = TRUE, bordered = TRUE)
+
+
+output$table_transport_time <- renderTable({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  # Calculate summary stats for transport time
+  transport_times <- df %>%
+    filter(!is.na(transport_field_cpltha)) %>%
+    pull(transport_field_cpltha)
+  
+  if (length(transport_times) == 0) {
+    return(tibble(Metric = "No data", Value = "—"))
+  }
+  
+  tibble(
+    Metric = c("Samples with data", "Minimum", "Median", "Maximum", "Mean"),
+    Value = c(
+      scales::comma(length(transport_times)),
+      sprintf("%.1f days", min(transport_times, na.rm = TRUE)),
+      sprintf("%.1f days", median(transport_times, na.rm = TRUE)),
+      sprintf("%.1f days", max(transport_times, na.rm = TRUE)),
+      sprintf("%.1f days", mean(transport_times, na.rm = TRUE))
+    )
+  )
+}, striped = TRUE, hover = TRUE, bordered = TRUE)
+
+
+output$latest_sample_date <- renderText({
+  df <- clean_data()  # Use full dataset, not filtered
+  req(df, nrow(df) > 0)
+  
+  latest <- max(df$date_sample, na.rm = TRUE)
+  
+  if (is.finite(latest) && !is.na(latest)) {
+    format(latest, "%d %b %Y")
+  } else {
+    "No valid dates"
+  }
+})
+
+
+# Enhanced status line with latest sample date
+output$data_status <- renderText({
+  miss <- missing_paths()
+  df <- clean_data()
+  
+  if (length(miss)) {
+    paste(c("⚠️ Missing/unreadable folders:", miss), collapse = "\n")
+  } else if (is.null(df) || !nrow(df)) {
+    "No data loaded"
+  } else {
+    latest <- max(df$date_sample, na.rm = TRUE)
+    latest_str <- if (is.finite(latest) && !is.na(latest)) {
+      sprintf(" | Latest: %s", format(latest, "%d %b %Y"))
+    } else {
+      ""
+    }
+    sprintf("%s samples loaded%s", scales::comma(nrow(df)), latest_str)
+  }
+})
+
+
+# ✅ ENHANCED: Age-Sex pyramid with overlay for filtered vs full dataset
+output$plot_study_dist <- renderPlot({
+  df_full <- clean_data()       # Full dataset
+  df_filtered <- filtered_data()  # Filtered dataset
+  
+  req(df_full, nrow(df_full) > 0)
+  req(df_filtered, nrow(df_filtered) > 0)
+  
+  # Check if overlay is enabled (default = TRUE)
+  show_overlay <- TRUE  # You can add a toggle input if desired
+  
+  # Prepare full dataset pyramid
+  pyramid_full <- df_full %>%
+    filter(!is.na(age_num), !is.na(sex), sex %in% c("M", "F")) %>%
+    mutate(
+      age_group = make_age_groups(age_num, width = 5),
+      sex_label = recode(sex, M = "Male", F = "Female")
+    ) %>%
+    filter(!is.na(age_group)) %>%
+    count(age_group, sex_label, name = "n") %>%
+    mutate(
+      dataset = "Full",
+      count = if_else(sex_label == "Male", -n, n)
+    )
+  
+  # Prepare filtered dataset pyramid
+  pyramid_filtered <- df_filtered %>%
+    filter(!is.na(age_num), !is.na(sex), sex %in% c("M", "F")) %>%
+    mutate(
+      age_group = make_age_groups(age_num, width = 5),
+      sex_label = recode(sex, M = "Male", F = "Female")
+    ) %>%
+    filter(!is.na(age_group)) %>%
+    count(age_group, sex_label, name = "n") %>%
+    mutate(
+      dataset = "Filtered",
+      count = if_else(sex_label == "Male", -n, n)
+    )
+  
+  # Check if we have enough filtered samples
+  n_filtered <- nrow(df_filtered %>% filter(!is.na(age_num), !is.na(sex)))
+  low_sample_warning <- n_filtered < 20
+  
+  if (!nrow(pyramid_full) && !nrow(pyramid_filtered)) {
+    # Fallback to simple study distribution
+    plot.new()
+    text(0.5, 0.5, "No age/sex data available", cex = 1.5, col = "gray50")
+    return()
+  }
+  
+  # Combine datasets
+  plot_data <- bind_rows(pyramid_full, pyramid_filtered)
+  
+  max_count <- max(abs(plot_data$count))
+  
+  # Create plot
+  p <- ggplot(plot_data, aes(x = age_group, y = count, fill = sex_label, alpha = dataset)) +
+    geom_col(width = 0.9, position = "identity", 
+             color = "black", linewidth = 0.3) +
+    coord_flip() +
+    scale_y_continuous(
+      labels = abs, 
+      limits = c(-max_count, max_count),
+      breaks = pretty(c(-max_count, max_count), n = 5)
+    ) +
+    scale_fill_manual(values = c("Male" = "#3498DB", "Female" = "#E91E63")) +
+    scale_alpha_manual(
+      values = c("Full" = 0.3, "Filtered" = 1.0),
+      guide = guide_legend(override.aes = list(fill = "gray"))
+    ) +
+    labs(
+      title = "Age-Sex Distribution: Filtered vs Full Dataset",
+      subtitle = sprintf(
+        "Filtered: %s samples | Full: %s samples%s",
+        scales::comma(sum(abs(pyramid_filtered$count))),
+        scales::comma(sum(abs(pyramid_full$count))),
+        if (low_sample_warning) " ⚠️ Low filtered sample size" else ""
+      ),
+      x = "Age group", 
+      y = "Sample count", 
+      fill = "Sex",
+      alpha = "Dataset"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      plot.subtitle = element_text(
+        color = if (low_sample_warning) "#E74C3C" else "black"
+      )
+    )
+  
+  p
+})
+
+
+# ✅ IMPROVED: Site metrics with clearer mobile unit detection
+output$vb_sites <- renderText({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  # More robust mobile unit detection
+  structures <- df %>%
+    mutate(structure = trimws(as.character(structure))) %>%
+    filter(!is.na(structure) & nzchar(structure)) %>%
+    # ✅ ENHANCED: Detect mobile units more comprehensively
+    filter(!grepl("^(UM|MUM|MOBILE|UNIT[ÉE]\\s*MOBILE)", toupper(structure))) %>%
+    pull(structure)
+  
+  sprintf("%s fixed sites", scales::comma(n_distinct(structures)))
+})
+
+
+# ✅ IMPROVED: Geographic coverage with split mobile/fixed
+output$table_geography <- renderTable({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  # Detect mobile structures
+  structures_classified <- df %>%
+    mutate(
+      structure = trimws(as.character(structure)),
+      is_mobile = grepl("^(UM|MUM|MOBILE|UNIT[ÉE]\\s*MOBILE)", toupper(structure))
+    ) %>%
+    filter(!is.na(structure) & nzchar(structure))
+  
+  n_fixed <- n_distinct(structures_classified$structure[!structures_classified$is_mobile])
+  n_mobile_structures <- n_distinct(structures_classified$structure[structures_classified$is_mobile])
+  n_mobile_units <- n_distinct(df$unit[!is.na(df$unit) & nzchar(df$unit)])
+  
+  tibble(
+    Metric = c(
+      "Provinces", 
+      "Health zones", 
+      "Fixed structures",      # ✅ CLARIFIED
+      "Mobile structures",     # ✅ NEW
+      "Mobile unit IDs"        # ✅ CLARIFIED
+    ),
+    Count = c(
+      n_distinct(df$province, na.rm = TRUE),
+      n_distinct(df$zone, na.rm = TRUE),
+      n_fixed,
+      n_mobile_structures,
+      n_mobile_units
+    )
+  )
+}, striped = TRUE, hover = TRUE, bordered = TRUE)
+
+  
   # === LAB RESULTS MODULE (replaces old version) ===
   lab_modules <- mod_lab_results_server(
     "lab_results",
@@ -780,7 +1128,41 @@ server <- function(input, output, session) {
       theme_minimal(base_size = 13) +
       theme(legend.position = "bottom")
   })
+output$plot_transport_time <- renderPlot({
+  df <- filtered_data()
+  req(df, nrow(df) > 0)
+  
+  transport_data <- df %>%
+    filter(!is.na(transport_field_cpltha)) %>%
+    select(transport_field_cpltha)
+  
+  if (!nrow(transport_data)) {
+    plot.new()
+    text(0.5, 0.5, "No transport time data available", cex = 1.2, col = "gray50")
+    return()
+  }
+  
+  ggplot(transport_data, aes(x = transport_field_cpltha)) +
+    geom_histogram(binwidth = 1, fill = "#3498DB", color = "black", alpha = 0.7) +
+    geom_vline(xintercept = median(transport_data$transport_field_cpltha, na.rm = TRUE),
+               linetype = "dashed", color = "red", size = 1) +
+    labs(
+      title = "Transport Time: Sample Collection → Shipment to CPLTHA",
+      subtitle = sprintf(
+        "Median: %.1f days | Range: %.1f - %.1f days | n = %s",
+        median(transport_data$transport_field_cpltha, na.rm = TRUE),
+        min(transport_data$transport_field_cpltha, na.rm = TRUE),
+        max(transport_data$transport_field_cpltha, na.rm = TRUE),
+        scales::comma(nrow(transport_data))
+      ),
+      x = "Days from collection to shipment",
+      y = "Number of samples"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(panel.grid.minor = element_blank())
+})
 
+      
   # Tables
   output$table_demographics <- renderTable({
     df <- filtered_data(); req(df)
