@@ -92,11 +92,11 @@ load_config <- function() {
         ielisa_dir    = "C:/Users/nvanreet/ITG/THA - Digital Management System - CRT Dipumba Upload - CRT Dipumba Upload/06 - iELISA/0602 - Résultats iELISA"
       ),
       map = list(
-        use_grid3_online = TRUE,
+        use_grid3_online = FALSE,
         grid3_url = "https://services3.arcgis.com/BU6Aadhn6tbBEdyk/arcgis/rest/services/GRID3_COD_health_zones_v7_0/FeatureServer/0/query?where=1%3D1&outFields=province,zonesante&outSR=4326&f=geojson",
         province_field_regex = "(?i)prov",
         zone_field_regex     = "(?i)zone|zs|zonesante",
-        fallback_shapefile   = "testdata/cod_health_zones.gpkg"
+        fallback_shapefile   = "testdata/cod_kasai_lomami_health_zones.gpkg"
       ),
       qc = list(
         drs_target_ml = 2.0, drs_accept_min_ml = 1.5, drs_accept_max_ml = 2.5,
