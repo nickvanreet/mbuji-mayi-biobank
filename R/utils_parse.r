@@ -216,3 +216,19 @@ is_positive_result <- function(x) {
   x_clean <- toupper(trimws(as.character(x)))
   grepl("POS|POSITIF|DETECT", x_clean)
 }
+
+parse_yes_no_uncertain <- function(x) {
+  if (is.null(x) || length(x) == 0) return(factor(levels = c("Oui", "Non", "Incertain")))
+  
+  x_clean <- toupper(trimws(as.character(x)))
+  x_clean[x_clean %in% c("", "NA", "N/A")] <- NA_character_
+  
+  result <- dplyr::case_when(
+    x_clean %in% c("OUI", "YES", "Y", "O", "1", "TRUE") ~ "Oui",
+    x_clean %in% c("NON", "NO", "N", "0", "FALSE") ~ "Non",
+    x_clean %in% c("INCERTAIN", "UNCERTAIN", "UNKNOWN", "?", "UNKN") ~ "Incertain",
+    TRUE ~ NA_character_
+  )
+  
+  factor(result, levels = c("Oui", "Non", "Incertain"))
+}
