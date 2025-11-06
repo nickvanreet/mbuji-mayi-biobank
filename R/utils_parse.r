@@ -217,24 +217,26 @@ is_positive_result <- function(x) {
   grepl("POS|POSITIF|DETECT", x_clean)
 }
 
-#' Parse yes/no/uncertain responses
+#' Parse yes/no/uncertain responses (treats empty/NA as Unknown)
 #' @param x Vector of response text
-#' @return Factor with levels Oui, Non, Incertain
+#' @return Character vector: Oui, Non, Incertain, Unknown, or NA
 #' @export
 parse_yes_no_uncertain <- function(x) {
-  if (is.null(x) || length(x) == 0) return(factor(levels = c("Oui", "Non", "Incertain")))
+  if (is.null(x) || length(x) == 0) return(character())
   
   x_clean <- toupper(trimws(as.character(x)))
-  x_clean[x_clean %in% c("", "NA", "N/A")] <- NA_character_
   
+  # Keep NA as NA (we'll convert to "Unknown" in the UI layer)
   result <- dplyr::case_when(
+    is.na(x_clean) | x_clean == "" | x_clean %in% c("NA", "N/A") ~ NA_character_,
     x_clean %in% c("OUI", "YES", "Y", "O", "1", "TRUE") ~ "Oui",
     x_clean %in% c("NON", "NO", "N", "0", "FALSE") ~ "Non",
-    x_clean %in% c("INCERTAIN", "UNCERTAIN", "UNKNOWN", "?", "UNKN") ~ "Incertain",
-    TRUE ~ NA_character_
+    x_clean %in% c("INCERTAIN", "UNCERTAIN", "?", "UNKN") ~ "Incertain",
+    TRUE ~ NA_character_  # Unrecognized values become NA
   )
   
-  factor(result, levels = c("Oui", "Non", "Incertain"))
+  # Return as character for flexibility
+  as.character(result)
 }
 
 #' Calculate conservation time with fallback dates
