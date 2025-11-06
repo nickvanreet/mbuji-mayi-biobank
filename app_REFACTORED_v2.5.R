@@ -445,6 +445,34 @@ ui <- page_navbar(
       textOutput("latest_arrival_date")
     ),
     
+    # >>> ADD THIS: Data Quality Check (moved to sidebar) <<<
+    hr(),
+    h5("Data Quality Check"),
+    card(
+      card_body(
+        fluidRow(
+          column(4,
+                 div(style = "text-align: center; padding: 10px;",
+                     h4(textOutput("samples_loaded"), style = "margin: 0; color: #2C3E50;"),
+                     p("Loaded", style = "margin: 4px 0 0 0; color: #7F8C8D;")
+                 )
+          ),
+          column(4,
+                 div(style = "text-align: center; padding: 10px;",
+                     h4(textOutput("samples_used"), style = "margin: 0; color: #27AE60;"),
+                     p("Used", style = "margin: 4px 0 0 0; color: #7F8C8D;")
+                 )
+          ),
+          column(4,
+                 div(style = "text-align: center; padding: 10px;",
+                     h4(textOutput("samples_excluded"), style = "margin: 0; color: #E74C3C;"),
+                     p("Excluded", style = "margin: 4px 0 0 0; color: #7F8C8D;")
+                 )
+          )
+        )
+      )
+    ),
+    
     hr(),
     h5("Filters"),
     dateRangeInput(
@@ -616,67 +644,19 @@ ui <- page_navbar(
   nav_panel(
     title = "Demographics",
     
-    # Data Quality Alert
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header("Data Quality Check", class = "bg-info text-white"),
-        card_body(
-          fluidRow(
-            column(4,
-                   div(style = "text-align: center; padding: 20px;",
-                       h3(textOutput("samples_loaded"), style = "margin: 0; color: #2C3E50;"),
-                       p("Total samples loaded from file", style = "margin: 5px 0 0 0; color: #7F8C8D;")
-                   )
-            ),
-            column(4,
-                   div(style = "text-align: center; padding: 20px;",
-                       h3(textOutput("samples_used"), style = "margin: 0; color: #27AE60;"),
-                       p("Samples used in analysis", style = "margin: 5px 0 0 0; color: #7F8C8D;")
-                   )
-            ),
-            column(4,
-                   div(style = "text-align: center; padding: 20px;",
-                       h3(textOutput("samples_excluded"), style = "margin: 0; color: #E74C3C;"),
-                       p("Samples excluded", style = "margin: 5px 0 0 0; color: #7F8C8D;")
-                   )
-            )
-          ),
-          hr(),
-          uiOutput("data_quality_explanation")
-        )
-      )
-    ),
-    
-    # Demographics Summary
     layout_columns(
       col_widths = c(12),
       card(
         card_header(
           div(
             style = "display: flex; justify-content: space-between; align-items: center;",
-            span("Demographics Summary"),
-            downloadButton("download_demographics", "Download Table", class = "btn-sm btn-outline-primary")
+            span("Demographics & Case History"),
+            downloadButton("download_demog_case", "Download Table", class = "btn-sm btn-outline-primary")
           )
         ),
-        p("Summary statistics for age and sex distribution", style = "padding: 10px; color: #7F8C8D; margin: 0;"),
-        tableOutput("table_demographics_full")
-      )
-    ),
-    
-    # Case History Summary
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header(
-          div(
-            style = "display: flex; justify-content: space-between; align-items: center;",
-            span("Case History Summary"),
-            downloadButton("download_case_history", "Download Table", class = "btn-sm btn-outline-primary")
-          )
-        ),
-        p("Breakdown of previous cases and treatment status", style = "padding: 10px; color: #7F8C8D; margin: 0;"),
-        tableOutput("table_case_history_full")
+        p("Combined summary of age/sex and case history (current filters applied).",
+          style = "padding: 10px; color: #7F8C8D; margin: 0;"),
+        tableOutput("table_demog_case_full")
       )
     )
   ),
@@ -1008,6 +988,92 @@ server <- function(input, output, session) {
     kpi <- kpi_summary()
     sprintf("%.1f%%", kpi$pct_shipped_inrb)
   })
+  
+  # ---- Combined Demographics + Case table helper -------------------------------
+  make_demog_case_tbl <- function(df) {
+    if (is.null(df) || !nrow(df)) return(tibble())
+    
+    # Demographics
+    age_vec <- df %>% filter(!is.na(age_num)) %>% pull(age_num)
+    n_total <- nrow(df)
+    n_age   <- length(age_vec)
+    
+    n_m <- sum(df$sex == "M", na.rm = TRUE)
+    n_f <- sum(df$sex == "F", na.rm = TRUE)
+    n_sex_unknown <- sum(is.na(df$sex))
+    
+    pct_f_known <- if ((n_m + n_f) > 0) n_f / (n_m + n_f) else NA_real_
+    
+    # Case history
+    df_proc <- df %>%
+      mutate(
+        ancien_cas_clean = case_when(
+          is.na(ancien_cas) | ancien_cas == "" ~ "Unknown",
+          TRUE ~ as.character(ancien_cas)
+        ),
+        traite_clean = case_when(
+          is.na(traite) | traite == "" ~ "Unknown",
+          TRUE ~ as.character(traite)
+        ),
+        case_combo = case_when(
+          ancien_cas_clean == "Oui" | traite_clean == "Oui" ~ "Previous/Treated",
+          ancien_cas_clean == "Non" & traite_clean == "Non" ~ "New patient",
+          TRUE ~ "Unknown"
+        )
+      )
+    
+    n_prev_treated <- sum(df_proc$case_combo == "Previous/Treated", na.rm = TRUE)
+    n_new          <- sum(df_proc$case_combo == "New patient", na.rm = TRUE)
+    n_case_unknown <- sum(df_proc$case_combo == "Unknown", na.rm = TRUE)
+    
+    # Assemble a single compact table
+    tibble::tibble(
+      Metric = c(
+        "Total samples",
+        "Samples with age",
+        "Median age (y)",
+        "Mean age (y)",
+        "Age range (min–max)",
+        "SD age (y)",
+        "Male",
+        "Female",
+        "Sex unknown",
+        "% Female (of known)",
+        "Previous/Treated",
+        "New patient",
+        "Case status unknown"
+      ),
+      Value = c(
+        scales::comma(n_total),
+        scales::comma(n_age),
+        if (n_age) sprintf("%.1f", median(age_vec, na.rm = TRUE)) else "—",
+        if (n_age) sprintf("%.1f", mean(age_vec, na.rm = TRUE)) else "—",
+        if (n_age) sprintf("%.0f–%.0f", min(age_vec, na.rm = TRUE), max(age_vec, na.rm = TRUE)) else "—",
+        if (n_age) sprintf("%.1f", sd(age_vec, na.rm = TRUE)) else "—",
+        scales::comma(n_m),
+        scales::comma(n_f),
+        scales::comma(n_sex_unknown),
+        if (!is.na(pct_f_known)) scales::percent(pct_f_known, accuracy = 0.1) else "—",
+        scales::comma(n_prev_treated),
+        scales::comma(n_new),
+        scales::comma(n_case_unknown)
+      )
+    )
+  }
+  
+  # ---- Render + download the combined table ------------------------------------
+  output$table_demog_case_full <- renderTable({
+    df <- filtered_data(); req(df)
+    make_demog_case_tbl(df)
+  }, striped = TRUE, hover = TRUE, bordered = TRUE, spacing = "s")
+  
+  output$download_demog_case <- downloadHandler(
+    filename = function() sprintf("demographics_case_%s.csv", format(Sys.Date(), "%Y%m%d")),
+    content = function(file) {
+      df <- filtered_data(); req(df)
+      readr::write_csv(make_demog_case_tbl(df), file)
+    }
+  )
 
   # === PLOTS ===============================================================
   output$plot_timeline <- renderPlot({

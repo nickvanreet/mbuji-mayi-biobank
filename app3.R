@@ -416,7 +416,7 @@ ui <- page_navbar(
     ),
     card(card_header("Key Conflicts"), DTOutput("debug_conflicts"))
   )
-)
+),
 
 # --- SERVER -----------------------------------------------------------------
 server <- function(input, output, session) {
