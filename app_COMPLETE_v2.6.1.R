@@ -1,6 +1,6 @@
-# MBUJI-MAYI BIOBANK DASHBOARD — ENHANCED WITH QC v2.6
+# MBUJI-MAYI BIOBANK DASHBOARD — COMPLETE v2.6
 # =============================================================================
-# v2.6: Strict data quality checks, duplicate detection, comprehensive QC tab
+# v2.6: Enhanced QC + All original features restored
 # =============================================================================
 
 # --- SETUP -------------------------------------------------------------------
@@ -118,6 +118,80 @@ load_config <- function() {
   cfg
 }
 
+# --- SOURCE MODULES ----------------------------------------------------------
+source_if_exists <- function(file, ...) {
+  if (file.exists(file)) {
+    tryCatch({
+      source(file, ...)
+      return(TRUE)
+    }, error = function(e) {
+      message(sprintf("Warning: Could not source %s: %s", file, e$message))
+      return(FALSE)
+    })
+  } else {
+    message(sprintf("Warning: File not found: %s", file))
+    return(FALSE)
+  }
+}
+
+source_if_exists("R/utils_parse.R", local = TRUE)
+source_if_exists("R/utils_join.R", local = TRUE)
+source_if_exists("R/mod_lab_results_complete_v2.R", local = TRUE)
+source_if_exists("R/helpers_lab_corrected.R", local = TRUE)
+source_if_exists("R/helpers_controls_WORKING.R", local = TRUE)
+source_if_exists("R/helpers_lab_results2.R", local = TRUE)
+source_if_exists("R/helpers_lab_merge_FIXED.R", local = TRUE)
+source_if_exists("R/mod_geo_map_complete.R", local = TRUE)
+source_if_exists("R/mod_extractions.R", local = TRUE)
+source_if_exists("R/helpers_concordance.R", local = TRUE)
+source_if_exists("R/helpers_dates.R", local = TRUE)
+source_if_exists("R/helpers_controls_v2.R", local = TRUE)
+
+# --- STUB FUNCTIONS FOR MISSING MODULES --------------------------------------
+if (!exists("mod_lab_results_ui")) {
+  mod_lab_results_ui <- function(id) {
+    ns <- NS(id)
+    card(card_header("Lab Results Module Not Available"),
+         p("Please ensure R/mod_lab_results_complete_v2.R exists"))
+  }
+}
+
+if (!exists("mod_lab_results_server")) {
+  mod_lab_results_server <- function(id, biobank_clean, config) {
+    moduleServer(id, function(input, output, session) {
+      list(lab_joined = reactive(tibble()))
+    })
+  }
+}
+
+if (!exists("mod_extractions_qc_ui")) {
+  mod_extractions_qc_ui <- function(id) {
+    ns <- NS(id)
+    card(card_header("Extractions Module Not Available"),
+         p("Please ensure R/mod_extractions.R exists"))
+  }
+}
+
+if (!exists("mod_extractions_qc_server")) {
+  mod_extractions_qc_server <- function(id, biobank_clean, config) {
+    moduleServer(id, function(input, output, session) {})
+  }
+}
+
+if (!exists("mod_geo_map_ui")) {
+  mod_geo_map_ui <- function(id) {
+    ns <- NS(id)
+    card(card_header("Geography Module Not Available"),
+         p("Please ensure R/mod_geo_map_complete.R exists"))
+  }
+}
+
+if (!exists("mod_geo_map_server")) {
+  mod_geo_map_server <- function(id, biobank_filtered, lab_joined, config) {
+    moduleServer(id, function(input, output, session) {})
+  }
+}
+
 # --- FALLBACK PARSE FUNCTIONS ------------------------------------------------
 if (!exists("parse_any_date")) {
   parse_any_date <- function(x) {
@@ -153,6 +227,20 @@ if (!exists("parse_study_code")) {
   }
 }
 
+if (!exists("parse_temp_code")) {
+  parse_temp_code <- function(x) {
+    x_clean <- toupper(trimws(as.character(x)))
+    case_when(
+      grepl("OK|GOOD|BON", x_clean) ~ "OK",
+      grepl("BROKEN|CASS|ROMPU", x_clean) ~ "Broken",
+      grepl("AMB|ROOM", x_clean) ~ "Ambiante",
+      grepl("FRIG|REFR", x_clean) ~ "Frigo",
+      grepl("CONG|FREEZ", x_clean) ~ "Congelateur",
+      TRUE ~ NA_character_
+    )
+  }
+}
+
 if (!exists("parse_yes_no_uncertain")) {
   parse_yes_no_uncertain <- function(x) {
     x_clean <- toupper(trimws(as.character(x)))
@@ -179,71 +267,117 @@ if (!exists("safe_days_between")) {
   }
 }
 
-# --- DATA QUALITY CHECKING ---------------------------------------------------
-# This function performs comprehensive QC and returns a list with:
-# - raw_data: the original data frame
-# - qc_report: detailed quality check results
-# - clean_data: only valid samples
-# - duplicates: information about duplicates
+if (!exists("calc_conservation_days")) {
+  calc_conservation_days <- function(date_treatment, date_sample, 
+                                      date_received = NULL, date_inrb = NULL, 
+                                      max_ok = 365) {
+    days <- safe_days_between(date_treatment, date_sample, max_ok)
+    
+    if (!is.null(date_received)) {
+      missing <- is.na(days) & !is.na(date_received)
+      if (any(missing)) {
+        days[missing] <- safe_days_between(date_received[missing], 
+                                            date_sample[missing], max_ok)
+      }
+    }
+    
+    if (!is.null(date_inrb)) {
+      missing <- is.na(days) & !is.na(date_inrb)
+      if (any(missing)) {
+        days[missing] <- safe_days_between(date_inrb[missing], 
+                                            date_sample[missing], max_ok)
+      }
+    }
+    
+    days
+  }
+}
+
+if (!exists("parse_shipped_to_inrb")) {
+  parse_shipped_to_inrb <- function(date_env_inrb, status_field = NULL) {
+    shipped <- !is.na(date_env_inrb)
+    
+    if (!is.null(status_field)) {
+      status_clean <- toupper(trimws(as.character(status_field)))
+      status_indicates_shipped <- grepl("INRB|ENV.*INRB|SHIP.*INRB|SENT", status_clean)
+      shipped <- shipped | status_indicates_shipped
+    }
+    
+    shipped
+  }
+}
 
 check_data_quality <- function(df_raw) {
   if (is.null(df_raw) || !is.data.frame(df_raw) || nrow(df_raw) == 0) {
     return(list(
       raw_data = df_raw,
       qc_report = tibble(check = "No data", result = "ERROR"),
-      clean_data = tibble(),
-      duplicates = tibble()
+      valid_data = tibble(),
+      duplicates = tibble(),
+      qc_summary = tibble(),
+      field_completeness = tibble(),
+      exclusion_reasons = tibble(),
+      qc_checks = list()
     ))
   }
   
-  # Standardize column names for easier access
+  df <- df_raw
+  
+  # Map to our standard names - FIXED patterns for clean_names() output
   rename_first <- function(df, new_name, pattern) {
     hits <- grep(pattern, names(df), ignore.case = TRUE, value = TRUE)
-    if (length(hits) >= 1) df <- df %>% dplyr::rename(!!new_name := dplyr::all_of(hits[1]))
+    if (length(hits) >= 1) {
+      df <- df %>% dplyr::rename(!!new_name := dplyr::all_of(hits[1]))
+    }
     df
   }
   
-  df <- df_raw %>%
-    rename_first("numero", "num[eé]ro") %>%
-    rename_first("barcode", "code.*barr|barcode") %>%
-    rename_first("lab_id", "id.*lab") %>%
-    rename_first("date_raw", "date.*pr[eé]lev|date.*sample|^date$|date_de_prelevement") %>%
-    rename_first("age", "^age|ann[eé]e.*naissance") %>%
-    rename_first("sex", "^sex|^sexe|^gender") %>%
-    rename_first("zone", "zone.*sant[eé]|health.*zone|^zs$") %>%
-    rename_first("province", "^province") %>%
-    rename_first("study", "[eé]tude|study|passif|actif") %>%
-    rename_first("structure", "structure.*sanit|facility") %>%
-    rename_first("drs_present", "pr[eé]sence.*drs") %>%
-    rename_first("dbs_present", "pr[eé]sence.*dbs") %>%
+  # After clean_names(), accents are removed, spaces become underscores
+  # Patterns must match the cleaned column names
+  df <- df %>%
+    rename_first("numero", "^numero$|numero") %>%
+    rename_first("barcode", "code.*barres|code_barres_kps|^barcode$") %>%
+    rename_first("date_raw", "date.*prelevement|date_de_prelevement|date.*sample") %>%
+    rename_first("age", "^age$|annee.*naissance") %>%
+    rename_first("sex", "^sexe$|^sex$") %>%
+    rename_first("zone", "zone.*sante|zone_de_sante|^zone$") %>%
+    rename_first("province", "^province$") %>%
+    rename_first("study", "^etude$|^study$") %>%
+    rename_first("structure", "structure.*sanitaire") %>%
+    rename_first("drs_present", "presence.*drs") %>%
+    rename_first("dbs_present", "presence.*dbs") %>%
     rename_first("dbs_count", "nombre.*dbs")
   
-  # QC Report initialization
-  qc_checks <- list()
-  
-  # Check 1: Total rows in file
+  # QC Checks
   total_rows <- nrow(df)
-  qc_checks$total_rows <- total_rows
   
-  # Check 2: Completely empty rows
-  empty_rows_mask <- df %>% 
-    select(-matches("^\\.\\.\\.[0-9]+$")) %>%  # Ignore Excel padding columns
-    apply(1, function(row) all(is.na(row) | row == ""))
+  # Remove completely empty rows
+  df_non_empty <- df %>% 
+    filter(if_any(everything(), ~ !is.na(.) & . != ""))
   
-  n_empty_rows <- sum(empty_rows_mask)
-  qc_checks$empty_rows <- n_empty_rows
+  n_empty_rows <- total_rows - nrow(df_non_empty)
   
-  # Check 3: Rows with minimum required fields (Numéro AND Code-barres KPS)
-  has_numero <- !is.na(df$numero) & df$numero != ""
-  has_barcode <- !is.na(df$barcode) & df$barcode != ""
+  # Check required fields exist
+  if (!"numero" %in% names(df_non_empty)) {
+    warning("Column 'numero' not found after renaming. Available columns: ", paste(names(df_non_empty), collapse = ", "))
+    df_non_empty$numero <- NA_character_
+  }
+  if (!"barcode" %in% names(df_non_empty)) {
+    warning("Column 'barcode' not found after renaming. Available columns: ", paste(names(df_non_empty), collapse = ", "))
+    df_non_empty$barcode <- NA_character_
+  }
+  
+  # Rows with minimum required fields
+  has_numero <- !is.na(df_non_empty$numero) & df_non_empty$numero != ""
+  has_barcode <- !is.na(df_non_empty$barcode) & df_non_empty$barcode != ""
   has_minimum <- has_numero & has_barcode
   
   n_with_minimum <- sum(has_minimum)
-  qc_checks$rows_with_minimum <- n_with_minimum
   
-  # Check 4: Field completeness (among rows with minimum fields)
-  df_valid <- df[has_minimum, ]
+  # Get valid data
+  df_valid <- df_non_empty[has_minimum, ]
   
+  # Field completeness
   field_completeness <- tibble(
     Field = c("Numéro", "Code-barres KPS", "Date prélèvement", "Étude", 
               "Structure sanitaire", "Zone de santé", "Province",
@@ -270,42 +404,36 @@ check_data_quality <- function(df_raw) {
     }
   }
   
-  qc_checks$field_completeness <- field_completeness
-  
-  # Check 5: Duplicate detection
+  # Duplicate detection
   duplicates_info <- tibble()
+  n_dup_numero <- 0
+  n_dup_barcode <- 0
   
   if (nrow(df_valid) > 0) {
-    # Check for duplicate Numéros
     dup_numero <- df_valid %>%
       group_by(numero) %>%
       filter(n() > 1) %>%
       ungroup() %>%
       arrange(numero) %>%
-      select(numero, barcode, date_raw, study, structure, zone) %>%
+      select(any_of(c("numero", "barcode", "date_raw", "study", "structure", "zone"))) %>%
       mutate(duplicate_type = "Duplicate Numéro")
     
-    # Check for duplicate Barcodes
     dup_barcode <- df_valid %>%
       group_by(barcode) %>%
       filter(n() > 1) %>%
       ungroup() %>%
       arrange(barcode) %>%
-      select(numero, barcode, date_raw, study, structure, zone) %>%
+      select(any_of(c("numero", "barcode", "date_raw", "study", "structure", "zone"))) %>%
       mutate(duplicate_type = "Duplicate Barcode")
     
-    duplicates_info <- bind_rows(dup_numero, dup_barcode) %>%
-      distinct()
+    duplicates_info <- bind_rows(dup_numero, dup_barcode) %>% distinct()
     
-    qc_checks$n_dup_numero <- n_distinct(dup_numero$numero, na.rm = TRUE)
-    qc_checks$n_dup_barcode <- n_distinct(dup_barcode$barcode, na.rm = TRUE)
-  } else {
-    qc_checks$n_dup_numero <- 0
-    qc_checks$n_dup_barcode <- 0
+    n_dup_numero <- if (nrow(dup_numero) > 0) n_distinct(dup_numero$numero) else 0
+    n_dup_barcode <- if (nrow(dup_barcode) > 0) n_distinct(dup_barcode$barcode) else 0
   }
   
-  # Check 6: Exclusion reasons for rows without minimum fields
-  df_excluded <- df[!has_minimum & !empty_rows_mask, ]
+  # Exclusion reasons
+  df_excluded <- df_non_empty[!has_minimum, ]
   
   exclusion_reasons <- tibble()
   if (nrow(df_excluded) > 0) {
@@ -321,12 +449,10 @@ check_data_quality <- function(df_raw) {
           TRUE ~ "Other"
         )
       ) %>%
-      select(row_number, numero, barcode, date_raw, study, structure, reason)
+      select(any_of(c("row_number", "numero", "barcode", "date_raw", "study", "structure", "reason")))
   }
   
-  qc_checks$exclusion_reasons <- exclusion_reasons
-  
-  # Create QC summary report
+  # QC Summary
   qc_summary <- tibble(
     Metric = c(
       "Total rows in Excel file",
@@ -342,18 +468,18 @@ check_data_quality <- function(df_raw) {
     Count = c(
       total_rows,
       n_empty_rows,
-      total_rows - n_empty_rows,
+      nrow(df_non_empty),
       NA_integer_,
       n_with_minimum,
       nrow(df_excluded),
       NA_integer_,
-      qc_checks$n_dup_numero,
-      qc_checks$n_dup_barcode
+      n_dup_numero,
+      n_dup_barcode
     ),
     `% of Total` = c(
       100,
       round(100 * n_empty_rows / total_rows, 1),
-      round(100 * (total_rows - n_empty_rows) / total_rows, 1),
+      round(100 * nrow(df_non_empty) / total_rows, 1),
       NA_real_,
       round(100 * n_with_minimum / total_rows, 1),
       round(100 * nrow(df_excluded) / total_rows, 1),
@@ -370,24 +496,36 @@ check_data_quality <- function(df_raw) {
     field_completeness = field_completeness,
     duplicates = duplicates_info,
     exclusion_reasons = exclusion_reasons,
-    qc_checks = qc_checks
+    qc_checks = list(
+      total_rows = total_rows,
+      empty_rows = n_empty_rows,
+      rows_with_minimum = n_with_minimum,
+      n_dup_numero = n_dup_numero,
+      n_dup_barcode = n_dup_barcode
+    )
   )
 }
 
-# --- DATA CLEANING (USES ONLY VALID ROWS) -----------------------------------
-clean_biobank_data <- function(df_valid) {
-  if (is.null(df_valid) || !is.data.frame(df_valid) || nrow(df_valid) == 0) {
-    return(tibble())
-  }
+# --- DATA CLEANING (ORIGINAL LOGIC RESTORED) ---------------------------------
+clean_biobank_data <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(tibble())
   
-  # Add any remaining column renames needed
   rename_first <- function(df, new_name, pattern) {
     hits <- grep(pattern, names(df), ignore.case = TRUE, value = TRUE)
     if (length(hits) >= 1) df <- df %>% dplyr::rename(!!new_name := dplyr::all_of(hits[1]))
     df
   }
   
-  df <- df_valid %>%
+  df <- df %>%
+    rename_first("barcode", "code.*barr|barcode") %>%
+    rename_first("lab_id", "num[eé]ro|id.*lab") %>%
+    rename_first("date_raw", "date.*pr[eé]lev|date.*sample|^date$|date_de_prelevement") %>%
+    rename_first("age", "^age|ann[eé]e.*naissance") %>%
+    rename_first("sex", "^sex|^sexe|^gender") %>%
+    rename_first("zone", "zone.*sant[eé]|health.*zone|^zs$") %>%
+    rename_first("province", "^province") %>%
+    rename_first("study", "[eé]tude|study|passif|actif") %>%
+    rename_first("structure", "structure.*sanit|facility") %>%
     rename_first("unit", "unit[eé].*mobile|mobile.*unit") %>%
     rename_first("date_received_raw", "date.*recept|date.*arriv") %>%
     rename_first("date_result_raw", "date.*result|result.*date") %>%
@@ -398,22 +536,22 @@ clean_biobank_data <- function(df_valid) {
     rename_first("temp_transport_raw", "temp.*transport") %>%
     rename_first("temp_cpltha_raw", "temp.*stockage|temp.*cpltha") %>%
     rename_first("ancien_cas_raw", "ancien.*cas|previous.*case|old.*case") %>%
-    rename_first("traite_raw", "trait[eé]|treated|treatment")
+    rename_first("traite_raw", "trait[eé]|treated|treatment") %>%
+    rename_first("drs_present", "pr[eé]sence.*drs") %>%
+    rename_first("dbs_present", "pr[eé]sence.*dbs") %>%
+    rename_first("dbs_count", "nombre.*dbs")
   
-  # Ensure all expected columns exist
   required <- c(
-    "unit","date_received_raw","date_result_raw",
+    "barcode","lab_id","date_raw","age","sex","zone","province","study",
+    "structure","unit","date_received_raw","date_result_raw",
     "date_env_cpltha_raw","date_rec_cpltha_raw","date_env_inrb_raw",
     "date_treatment_raw","temp_transport_raw","temp_cpltha_raw",
-    "ancien_cas_raw","traite_raw"
+    "ancien_cas_raw","traite_raw","drs_present","dbs_present","dbs_count"
   )
   for (col in required) if (!col %in% names(df)) df[[col]] <- NA_character_
   
   df %>%
     mutate(
-      # Use numero as lab_id if lab_id doesn't exist
-      lab_id = if ("lab_id" %in% names(.)) lab_id else as.character(numero),
-      
       # Parse dates
       date_sample     = parse_any_date(date_raw),
       date_received   = parse_any_date(date_received_raw),
@@ -428,19 +566,27 @@ clean_biobank_data <- function(df_valid) {
       sex     = parse_sex_code(sex),
       study   = parse_study_code(study),
       
+      # Parse temperature
+      temp_field = parse_temp_code(temp_transport_raw),
+      temp_hs    = parse_temp_code(temp_cpltha_raw),
+      
       # Calculate transport times
       transport_field_hs = safe_days_between(date_env_cpltha, date_sample, 30),
       transport_hs_lsd   = safe_days_between(date_rec_cpltha, date_env_cpltha, 30),
       transport_lsd_inrb = safe_days_between(date_env_inrb, date_rec_cpltha, 90),
       transport_field_cpltha = safe_days_between(date_env_cpltha, date_sample, 90),
       
-      # Calculate conservation time with fallbacks
-      conservation_days = safe_days_between(date_treatment, date_sample, 365),
+      # Calculate conservation time
+      conservation_days = calc_conservation_days(
+        date_treatment, date_sample,
+        date_received, date_env_inrb,
+        max_ok = 365
+      ),
       
-      # Determine INRB shipment status
-      shipped_to_inrb = !is.na(date_env_inrb),
+      # INRB shipment
+      shipped_to_inrb = parse_shipped_to_inrb(date_env_inrb),
       
-      # Clean text fields
+      # Clean text
       zone      = stringr::str_squish(as.character(zone)),
       province  = stringr::str_squish(as.character(province)),
       structure = stringr::str_squish(as.character(structure)),
@@ -450,12 +596,13 @@ clean_biobank_data <- function(df_valid) {
       ancien_cas = as.character(parse_yes_no_uncertain(ancien_cas_raw)),
       traite = as.character(parse_yes_no_uncertain(traite_raw)),
       
-      # Parse DRS/DBS fields
+      # Parse DRS/DBS
       drs_present = parse_yes_no_uncertain(drs_present),
       dbs_present = parse_yes_no_uncertain(dbs_present),
       dbs_count = as.numeric(dbs_count)
     ) %>%
-    dplyr::filter(!is.na(date_sample))  # Must have a valid sample date
+    dplyr::filter(!is.na(date_sample)) %>%
+    dplyr::distinct(barcode, lab_id, .keep_all = TRUE)
 }
 
 make_age_groups <- function(age, width = 5) {
@@ -485,7 +632,7 @@ compute_kpi_summary <- memoise::memoise(function(df) {
 
 # --- UI ---------------------------------------------------------------------
 ui <- page_navbar(
-  title = "Mbuji-Mayi Biobank QC",
+  title = "Mbuji-Mayi Biobank",
   theme = bs_theme(
     version = 5, preset = "bootstrap",
     primary = "#2C3E50", success = "#27AE60", info = "#3498DB",
@@ -500,7 +647,9 @@ ui <- page_navbar(
     actionButton("load_data", "Load Data", class = "btn-primary w-100 mb-3"),
     div(
       style = "font-size: 13px; color: #555;",
-      textOutput("data_status")
+      textOutput("data_status"),
+      hr(style = "margin: 8px 0;"),
+      textOutput("latest_arrival_date")
     ),
     
     hr(),
@@ -514,20 +663,9 @@ ui <- page_navbar(
         ),
         div(
           style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
-          span("Empty rows"),
-          strong(style = "color:#95A5A6;", textOutput("qc_empty_rows"))
-        ),
-        div(
-          style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
           span("Valid samples"),
           strong(style = "color:#27AE60;", textOutput("qc_valid_samples"))
         ),
-        div(
-          style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
-          span("Excluded"),
-          strong(style = "color:#E74C3C;", textOutput("qc_excluded"))
-        ),
-        hr(style = "margin: 8px 0;"),
         div(
           style = "display:flex; justify-content:space-between; align-items:baseline; margin:.25rem 0;",
           span("⚠ Duplicates"),
@@ -556,7 +694,6 @@ ui <- page_navbar(
   nav_panel(
     title = "📊 Data Quality",
     
-    # QC Summary
     layout_columns(
       col_widths = c(12),
       card(
@@ -572,7 +709,6 @@ ui <- page_navbar(
       )
     ),
     
-    # Field Completeness
     layout_columns(
       col_widths = c(12),
       card(
@@ -583,7 +719,6 @@ ui <- page_navbar(
       )
     ),
     
-    # Duplicates Section
     layout_columns(
       col_widths = c(12),
       card(
@@ -600,7 +735,6 @@ ui <- page_navbar(
       )
     ),
     
-    # Exclusion Reasons
     layout_columns(
       col_widths = c(12),
       card(
@@ -612,13 +746,13 @@ ui <- page_navbar(
     )
   ),
   
-  # === OVERVIEW TAB ========================================================
+  # === OVERVIEW TAB (ORIGINAL) =============================================
   nav_panel(
     title = "Overview",
     layout_columns(
       fill = FALSE, col_widths = c(2,2,2,2,2,2),
       value_box(
-        title = "Valid Samples",
+        title = "Total Samples",
         value = textOutput("vb_total"),
         showcase = bs_icon("clipboard-data", size = "2rem"),
         showcase_layout = "top right",
@@ -690,7 +824,75 @@ ui <- page_navbar(
     )
   ),
   
-  # === DEMOGRAPHICS TAB ====================================================
+  # === TRANSPORT TAB (ORIGINAL) ============================================
+  nav_panel(
+    title = "Transport",
+    layout_columns(
+      fill = FALSE, col_widths = c(3,3,3,3),
+      value_box(
+        title = "Median Transport Time",
+        value = textOutput("vb_transport_median"),
+        showcase = bs_icon("truck"),
+        theme = "info",
+        p("Sample → Shipment to CPLTHA", style = "font-size: 12px; margin: 0;")
+      ),
+      value_box(
+        title = "95th Percentile",
+        value = textOutput("vb_transport_p95"),
+        showcase = bs_icon("clock-history"),
+        theme = "warning",
+        p("Transport time P95", style = "font-size: 12px; margin: 0;")
+      ),
+      value_box(
+        title = "Median Conservation",
+        value = textOutput("vb_conservation_median"),
+        showcase = bs_icon("thermometer-snow"),
+        theme = "primary",
+        p("Sample → Lab treatment", style = "font-size: 12px; margin: 0;")
+      ),
+      value_box(
+        title = "Shipped to INRB",
+        value = textOutput("vb_shipped_inrb"),
+        showcase = bs_icon("box-seam"),
+        theme = "success",
+        p("% samples sent to INRB", style = "font-size: 12px; margin: 0;")
+      )
+    ),
+    
+    layout_columns(
+      col_widths = c(6,6),
+      card(
+        card_header("Transport Time Distribution"),
+        plotOutput("plot_transport_dist", height = 350)
+      ),
+      card(
+        card_header("Conservation Time Distribution"),
+        plotOutput("plot_conservation_dist", height = 350)
+      )
+    ),
+    
+    layout_columns(
+      col_widths = c(3,3,3,3),
+      card(
+        card_header("Temperature Status"),
+        tableOutput("table_temperature")
+      ),
+      card(
+        card_header("Top Contributing Sites"),
+        tableOutput("table_top_sites")
+      ),
+      card(
+        card_header("Transport Summary by Province"),
+        tableOutput("table_transport_province")
+      ),
+      card(
+        card_header("Shipment Status by Site"),
+        DTOutput("table_shipment_status")
+      )
+    )
+  ),
+  
+  # === DEMOGRAPHICS TAB (ORIGINAL) =========================================
   nav_panel(
     title = "Demographics",
     layout_columns(
@@ -710,18 +912,21 @@ ui <- page_navbar(
     )
   ),
   
-  # === DATA TAB ============================================================
+  # === OTHER TABS (ORIGINAL) ===============================================
+  nav_panel(title = "Geography", mod_geo_map_ui("geo_map")),
+  nav_panel(title = "Extraction QC", mod_extractions_qc_ui("extractions_qc")),
+  nav_panel(title = "Lab Results", mod_lab_results_ui("lab_results")),
+  
   nav_panel(
     title = "Data",
     card(
-      card_header("Valid Sample Records",
+      card_header("Sample Records",
                   class = "d-flex justify-content-between align-items-center",
                   downloadButton("download_data", "Download CSV", class = "btn-sm")),
       DTOutput("data_table")
     )
   ),
   
-  # === DEBUG TAB ===========================================================
   nav_panel(
     title = "Debug",
     layout_columns(
@@ -732,12 +937,12 @@ ui <- page_navbar(
   )
 )
 
-# --- SERVER -----------------------------------------------------------------
+# --- SERVER FUNCTION ---------------------------------------------------------
 server <- function(input, output, session) {
   
   cfg <- reactiveVal(load_config())
   
-  # Store QC results
+  # Store QC and clean data
   qc_results <- reactiveVal(NULL)
   clean_data <- reactiveVal(NULL)
   
@@ -768,10 +973,10 @@ server <- function(input, output, session) {
     req(input$selected_file)
     showNotification("Loading and checking data quality...", duration = 3, type = "message")
     
-    # Read raw data
     df_raw <- tryCatch({
       readxl::read_excel(input$selected_file, .name_repair = "minimal") %>%
-        janitor::clean_names()
+        janitor::clean_names() %>%
+        mutate(across(everything(), as.character))
     }, error = function(e) {
       showNotification(paste("Load error:", e$message), type = "error")
       return(NULL)
@@ -779,21 +984,28 @@ server <- function(input, output, session) {
     
     if (is.null(df_raw)) return()
     
-    # Perform comprehensive QC
-    qc <- check_data_quality(df_raw)
+    # Perform QC
+    qc <- tryCatch({
+      check_data_quality(df_raw)
+    }, error = function(e) {
+      showNotification(paste("QC error:", e$message), type = "error", duration = 10)
+      return(NULL)
+    })
+    
+    if (is.null(qc)) return()
     qc_results(qc)
     
-    # Clean only the valid data
+    # Clean valid data
     df_clean <- tryCatch({
       clean_biobank_data(qc$valid_data)
     }, error = function(e) {
-      showNotification(paste("Clean error:", e$message), type = "error")
+      showNotification(paste("Clean error:", e$message), type = "error", duration = 10)
       return(tibble())
     })
     
     clean_data(df_clean)
     
-    # Show summary notification
+    # Show summary
     n_valid <- qc$qc_checks$rows_with_minimum
     n_dup <- qc$qc_checks$n_dup_numero + qc$qc_checks$n_dup_barcode
     
@@ -804,7 +1016,7 @@ server <- function(input, output, session) {
     
     showNotification(msg, type = if (n_dup > 0) "warning" else "message", duration = 5)
     
-    # Update filter choices
+    # Update filters
     if (nrow(df_clean) > 0) {
       studies    <- sort(unique(na.omit(as.character(df_clean$study))))
       provinces  <- sort(unique(na.omit(df_clean$province)))
@@ -827,30 +1039,17 @@ server <- function(input, output, session) {
     }
   })
   
-  # === QC SIDEBAR OUTPUTS ==================================================
+  # === QC OUTPUTS ==========================================================
   output$qc_total_rows <- renderText({
     qc <- qc_results()
     if (is.null(qc)) return("—")
     scales::comma(qc$qc_checks$total_rows)
   })
   
-  output$qc_empty_rows <- renderText({
-    qc <- qc_results()
-    if (is.null(qc)) return("—")
-    scales::comma(qc$qc_checks$empty_rows)
-  })
-  
   output$qc_valid_samples <- renderText({
     qc <- qc_results()
     if (is.null(qc)) return("—")
     scales::comma(qc$qc_checks$rows_with_minimum)
-  })
-  
-  output$qc_excluded <- renderText({
-    qc <- qc_results()
-    if (is.null(qc)) return("—")
-    excluded <- qc$qc_checks$total_rows - qc$qc_checks$empty_rows - qc$qc_checks$rows_with_minimum
-    scales::comma(excluded)
   })
   
   output$qc_duplicates <- renderText({
@@ -861,7 +1060,6 @@ server <- function(input, output, session) {
     scales::comma(n_dup)
   })
   
-  # === QC TAB OUTPUTS ======================================================
   output$table_qc_summary <- renderTable({
     qc <- qc_results()
     req(qc)
@@ -916,25 +1114,18 @@ server <- function(input, output, session) {
     
     if (nrow(qc$duplicates) == 0) {
       return(datatable(
-        tibble(Message = "No duplicates found - all Numéros and Barcodes are unique!"),
+        tibble(Message = "No duplicates found!"),
         options = list(dom = 't'),
         rownames = FALSE
       ))
     }
     
     qc$duplicates %>%
-      mutate(
-        date_raw = as.character(date_raw)
-      ) %>%
+      mutate(date_raw = as.character(date_raw)) %>%
       datatable(
-        options = list(
-          pageLength = 25,
-          scrollX = TRUE,
-          order = list(list(0, 'asc'))
-        ),
+        options = list(pageLength = 25, scrollX = TRUE),
         filter = "top",
-        rownames = FALSE,
-        class = "display compact"
+        rownames = FALSE
       ) %>%
       formatStyle(
         'duplicate_type',
@@ -958,15 +1149,9 @@ server <- function(input, output, session) {
     }
     
     qc$exclusion_reasons %>%
-      mutate(
-        date_raw = as.character(date_raw)
-      ) %>%
+      mutate(date_raw = as.character(date_raw)) %>%
       datatable(
-        options = list(
-          pageLength = 25,
-          scrollX = TRUE,
-          order = list(list(0, 'asc'))
-        ),
+        options = list(pageLength = 25, scrollX = TRUE),
         filter = "top",
         rownames = FALSE
       )
@@ -974,25 +1159,20 @@ server <- function(input, output, session) {
   
   # === DOWNLOAD HANDLERS ===================================================
   output$download_qc_report <- downloadHandler(
-    filename = function() sprintf("QC_report_%s.csv", format(Sys.Date(), "%Y%m%d")),
+    filename = function() sprintf("QC_report_%s.xlsx", format(Sys.Date(), "%Y%m%d")),
     content = function(file) {
       qc <- qc_results()
       req(qc)
       
-      # Combine all QC info into one report
-      report <- list(
-        Summary = qc$qc_summary,
-        Field_Completeness = qc$field_completeness,
-        Duplicates = if (nrow(qc$duplicates) > 0) qc$duplicates else tibble(Note = "No duplicates"),
-        Exclusions = if (nrow(qc$exclusion_reasons) > 0) qc$exclusion_reasons else tibble(Note = "No exclusions")
-      )
-      
-      # Write to Excel with multiple sheets or CSV with sections
       wb <- openxlsx::createWorkbook()
-      for (sheet_name in names(report)) {
-        openxlsx::addWorksheet(wb, sheet_name)
-        openxlsx::writeData(wb, sheet_name, report[[sheet_name]])
-      }
+      openxlsx::addWorksheet(wb, "Summary")
+      openxlsx::writeData(wb, "Summary", qc$qc_summary)
+      openxlsx::addWorksheet(wb, "Field_Completeness")
+      openxlsx::writeData(wb, "Field_Completeness", qc$field_completeness)
+      openxlsx::addWorksheet(wb, "Duplicates")
+      openxlsx::writeData(wb, "Duplicates", if (nrow(qc$duplicates) > 0) qc$duplicates else tibble(Note = "No duplicates"))
+      openxlsx::addWorksheet(wb, "Exclusions")
+      openxlsx::writeData(wb, "Exclusions", if (nrow(qc$exclusion_reasons) > 0) qc$exclusion_reasons else tibble(Note = "No exclusions"))
       openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
     }
   )
@@ -1005,6 +1185,52 @@ server <- function(input, output, session) {
       readr::write_csv(qc$duplicates, file)
     }
   )
+  
+  # === CASCADING FILTERS ===================================================
+  observe({
+    df <- clean_data()
+    req(df, nrow(df) > 0)
+    
+    if (!is.null(input$filter_province) && input$filter_province != "all") {
+      zones_in_province <- df %>%
+        filter(province == input$filter_province) %>%
+        pull(zone) %>% unique() %>% sort() %>% na.omit()
+      
+      current_zone <- input$filter_zone
+      new_selection <- if (current_zone %in% c("all", zones_in_province)) current_zone else "all"
+      
+      updateSelectInput(session, "filter_zone", 
+                        choices = c("All" = "all", zones_in_province),
+                        selected = new_selection)
+    } else {
+      all_zones <- sort(unique(na.omit(df$zone)))
+      updateSelectInput(session, "filter_zone", choices = c("All" = "all", all_zones))
+    }
+  })
+  
+  observe({
+    df <- clean_data()
+    req(df, nrow(df) > 0)
+    
+    df_filtered <- df
+    
+    if (!is.null(input$filter_province) && input$filter_province != "all") {
+      df_filtered <- df_filtered %>% filter(province == input$filter_province)
+    }
+    
+    if (!is.null(input$filter_zone) && input$filter_zone != "all") {
+      df_filtered <- df_filtered %>% filter(zone == input$filter_zone)
+    }
+    
+    structures_available <- df_filtered %>% pull(structure) %>% unique() %>% sort() %>% na.omit()
+    
+    current_structure <- input$filter_structure
+    new_selection <- if (current_structure %in% c("all", structures_available)) current_structure else "all"
+    
+    updateSelectInput(session, "filter_structure", 
+                      choices = c("All" = "all", structures_available),
+                      selected = new_selection)
+  })
   
   # === FILTERED DATA =======================================================
   filtered_data <- reactive({
@@ -1060,6 +1286,26 @@ server <- function(input, output, session) {
   output$vb_zones <- renderText({
     kpi <- kpi_summary()
     scales::comma(kpi$n_zones)
+  })
+  
+  output$vb_transport_median <- renderText({
+    kpi <- kpi_summary()
+    if (is.finite(kpi$median_transport)) sprintf("%.1f days", kpi$median_transport) else "—"
+  })
+  
+  output$vb_transport_p95 <- renderText({
+    kpi <- kpi_summary()
+    if (is.finite(kpi$p95_transport)) sprintf("%.1f days", kpi$p95_transport) else "—"
+  })
+  
+  output$vb_conservation_median <- renderText({
+    kpi <- kpi_summary()
+    if (is.finite(kpi$median_conservation)) sprintf("%.1f days", kpi$median_conservation) else "—"
+  })
+  
+  output$vb_shipped_inrb <- renderText({
+    kpi <- kpi_summary()
+    sprintf("%.1f%%", kpi$pct_shipped_inrb)
   })
   
   # === PLOTS ===============================================================
@@ -1186,7 +1432,62 @@ server <- function(input, output, session) {
     }
   })
   
-  # Demographics table
+  output$plot_transport_dist <- renderPlot({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    
+    transport_data <- df %>% filter(!is.na(transport_field_cpltha))
+    
+    if (!nrow(transport_data)) {
+      plot.new()
+      text(0.5, 0.5, "No transport data", cex = 1.2, col = "gray50")
+      return()
+    }
+    
+    med <- median(transport_data$transport_field_cpltha, na.rm = TRUE)
+    p95 <- quantile(transport_data$transport_field_cpltha, 0.95, na.rm = TRUE)
+    
+    ggplot(transport_data, aes(x = transport_field_cpltha)) +
+      geom_histogram(binwidth = 1, fill = "#3498DB", color = "black", alpha = 0.7) +
+      geom_vline(xintercept = med, linetype = "dashed", color = "red", linewidth = 1) +
+      geom_vline(xintercept = p95, linetype = "dotted", color = "orange", linewidth = 1) +
+      labs(
+        title = "Transport Time: Sample → Shipment to CPLTHA",
+        subtitle = sprintf("Median: %.1f d | P95: %.1f d | n = %s",
+                           med, p95, scales::comma(nrow(transport_data))),
+        x = "Days", y = "Count"
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(panel.grid.minor = element_blank())
+  })
+  
+  output$plot_conservation_dist <- renderPlot({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    
+    cons_data <- df %>% filter(!is.na(conservation_days))
+    
+    if (!nrow(cons_data)) {
+      plot.new()
+      text(0.5, 0.5, "No conservation data", cex = 1.2, col = "gray50")
+      return()
+    }
+    
+    med <- median(cons_data$conservation_days, na.rm = TRUE)
+    
+    ggplot(cons_data, aes(x = conservation_days)) +
+      geom_histogram(binwidth = 5, fill = "#27AE60", color = "black", alpha = 0.7) +
+      geom_vline(xintercept = med, linetype = "dashed", color = "red", linewidth = 1) +
+      labs(
+        title = "Conservation Time: Sample → Lab Treatment",
+        subtitle = sprintf("Median: %.1f days | n = %s", med, scales::comma(nrow(cons_data))),
+        x = "Days", y = "Count"
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(panel.grid.minor = element_blank())
+  })
+  
+  # === TABLES ==============================================================
   make_demog_case_tbl_compare <- function(df_filtered, df_full) {
     if (is.null(df_full) || !nrow(df_full)) return(tibble())
     
@@ -1316,13 +1617,90 @@ server <- function(input, output, session) {
     }
   )
   
-  # === DATA TABLE ==========================================================
+  output$table_top_sites <- renderTable({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    df %>%
+      filter(!is.na(structure)) %>%
+      count(structure, sort = TRUE) %>%
+      head(5) %>%
+      mutate(n = scales::comma(n)) %>%
+      rename(Site = structure, Samples = n)
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
+  output$table_temperature <- renderTable({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    
+    temp_summary <- df %>%
+      mutate(
+        temp_status = case_when(
+          is.na(temp_hs) ~ "Unknown",
+          temp_hs == "Frigo" ~ "Refrigerated",
+          temp_hs == "Congelateur" ~ "Frozen",
+          temp_hs == "Ambiante" ~ "Ambient",
+          TRUE ~ "Other"
+        )
+      ) %>%
+      count(temp_status) %>%
+      mutate(Percent = sprintf("%.1f%%", n / sum(n) * 100)) %>%
+      rename(Status = temp_status, Count = n)
+    
+    temp_summary
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
+  output$table_transport_province <- renderTable({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    
+    df %>%
+      filter(!is.na(province), !is.na(transport_field_cpltha)) %>%
+      group_by(province) %>%
+      summarise(
+        n = n(),
+        Median = median(transport_field_cpltha, na.rm = TRUE),
+        P95 = quantile(transport_field_cpltha, 0.95, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        n = scales::comma(n),
+        Median = sprintf("%.1f d", Median),
+        P95 = sprintf("%.1f d", P95)
+      ) %>%
+      rename(Province = province, Samples = n)
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
+  output$table_shipment_status <- renderDT({
+    df <- filtered_data()
+    req(df, nrow(df) > 0)
+    
+    df %>%
+      filter(!is.na(structure)) %>%
+      group_by(structure) %>%
+      summarise(
+        Total = n(),
+        Shipped = sum(shipped_to_inrb, na.rm = TRUE),
+        `% Shipped` = sprintf("%.1f%%", mean(shipped_to_inrb, na.rm = TRUE) * 100),
+        `Median Transport (d)` = sprintf("%.1f", median(transport_field_cpltha, na.rm = TRUE)),
+        `Outliers (>P95)` = sum(transport_field_cpltha > 
+                                  quantile(df$transport_field_cpltha, 0.95, na.rm = TRUE), 
+                                na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      arrange(desc(Total)) %>%
+      datatable(
+        options = list(pageLength = 10, scrollX = TRUE),
+        filter = "top", rownames = FALSE
+      )
+  })
+  
+  # === DATA TABLE & EXPORT =================================================
   output$data_table <- renderDT({
     df <- filtered_data()
     req(df)
     df %>%
-      select(numero, barcode, lab_id, date_sample, study, sex, age_num,
-             province, zone, structure, drs_present, dbs_present, dbs_count) %>%
+      select(barcode, lab_id, date_sample, date_received, date_result,
+             study, sex, age_num, province, zone, structure, unit) %>%
       datatable(
         options = list(pageLength = 25, scrollX = TRUE),
         filter = "top",
@@ -1331,13 +1709,27 @@ server <- function(input, output, session) {
   })
   
   output$download_data <- downloadHandler(
-    filename = function() sprintf("valid_samples_%s.csv", format(Sys.Date(), "%Y%m%d")),
+    filename = function() sprintf("biobank_export_%s.csv", format(Sys.Date(), "%Y%m%d")),
     content = function(file) {
       readr::write_csv(filtered_data(), file)
     }
-  )  # ← Proper closing
+  )
   
-  # Status message
+  output$download_pyramid <- downloadHandler(
+    filename = function() sprintf("age_sex_pyramid_%s.png", format(Sys.Date(), "%Y%m%d")),
+    content = function(file) {
+      p <- last_plot()
+      ggsave(file, plot = p, width = 10, height = 8, dpi = 300)
+    }
+  )
+  
+  # === MODULES =============================================================
+  lab_modules <- mod_lab_results_server("lab_results", biobank_clean = clean_data, config = cfg)
+  mod_extractions_qc_server("extractions_qc", biobank_clean = clean_data, config = cfg)
+  mod_geo_map_server("geo_map", biobank_filtered = filtered_data, 
+                     lab_joined = lab_modules$lab_joined, config = cfg)
+  
+  # === STATUS MESSAGES =====================================================
   output$data_status <- renderText({
     df <- clean_data()
     qc <- qc_results()
@@ -1345,7 +1737,7 @@ server <- function(input, output, session) {
     if (is.null(qc)) {
       "No data loaded"
     } else if (is.null(df) || !nrow(df)) {
-      sprintf("⚠️ No valid samples (loaded %s rows)", scales::comma(qc$qc_checks$total_rows))
+      sprintf("⚠️ No valid samples")
     } else {
       n_valid <- qc$qc_checks$rows_with_minimum
       n_dup <- qc$qc_checks$n_dup_numero + qc$qc_checks$n_dup_barcode
@@ -1357,6 +1749,18 @@ server <- function(input, output, session) {
       latest_str <- if (is.finite(latest)) format(latest, "%d %b %Y") else "—"
       
       sprintf("%s | Latest: %s", msg, latest_str)
+    }
+  })
+  
+  output$latest_arrival_date <- renderText({
+    df <- clean_data()
+    if (is.null(df) || !nrow(df)) return("")
+    
+    latest_arrival <- max(df$date_rec_cpltha, na.rm = TRUE)
+    if (is.finite(latest_arrival)) {
+      sprintf("Latest arrival: %s", format(latest_arrival, "%d %b %Y"))
+    } else {
+      ""
     }
   })
   
@@ -1377,7 +1781,9 @@ server <- function(input, output, session) {
         columns = ncol(df),
         column_names = names(df),
         study_breakdown = table(df$study, useNA = "ifany"),
-        date_range = range(df$date_sample, na.rm = TRUE)
+        date_range = range(df$date_sample, na.rm = TRUE),
+        transport_stats = summary(df$transport_field_cpltha),
+        conservation_stats = summary(df$conservation_days)
       ) else "No clean data"
     )
   })
