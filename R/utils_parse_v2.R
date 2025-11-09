@@ -136,27 +136,19 @@ parse_sex_code <- function(x) {
 #' @return Factor with levels Ambiante, Frigo, Congelateur, or NA
 #' @export
 parse_temp_code <- function(x) {
-  if (is.null(x) || length(x) == 0) {
-    return(factor(levels = c("Ambiante", "Frigo", "Congelateur")))
-  }
+  if (is.null(x) || length(x) == 0) return(factor(levels = c("Ambiante","Frigo","Congelateur")))
+  lab <- stringi::stri_trans_general(as.character(x), "Latin-ASCII")
+  lab <- toupper(trimws(lab))
   
-  tryCatch({
-    lab <- stringi::stri_trans_general(as.character(x), "Latin-ASCII")
-    lab <- toupper(trimws(lab))
-    
-    result <- dplyr::case_when(
-      lab == "" ~ NA_character_,
-      grepl("^A", lab) ~ "Ambiante",
-      grepl("^F", lab) ~ "Frigo",
-      grepl("^C|CONG|FREEZ", lab) ~ "Congelateur",
-      TRUE ~ NA_character_
-    )
-    
-    factor(result, levels = c("Ambiante", "Frigo", "Congelateur"))
-  }, error = function(e) {
-    warning("Temperature code parsing error: ", e$message, call. = FALSE)
-    factor(rep(NA_character_, length(x)), levels = c("Ambiante", "Frigo", "Congelateur"))
-  })
+  # accept “A / F / C”, full words, mixed text
+  is_a <- lab %in% c("A","AMB","AMBIANT","AMBIANTE","ROOM","AMBIENTE") | grepl("\\bA( |/|\\b)|AMB|AMBI", lab)
+  is_f <- lab %in% c("F","FRIGO","REFRIGERE","REFRIGERATOR","FRIDGE")   | grepl("\\bF( |/|\\b)|FRIG|REFR", lab)
+  is_c <- lab %in% c("C","CONGELATEUR","CONGELE","FREEZER","FREEZE")   | grepl("\\bC( |/|\\b)|CONG|FREEZ", lab)
+  
+  out <- ifelse(is_a, "Ambiante",
+                ifelse(is_f, "Frigo",
+                       ifelse(is_c, "Congelateur", NA_character_)))
+  factor(out, levels = c("Ambiante","Frigo","Congelateur"))
 }
 
 #' Parse age values (handle birth years)

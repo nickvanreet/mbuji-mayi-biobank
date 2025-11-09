@@ -1,4 +1,4 @@
-# MBUJI-MAYI BIOBANK DASHBOARD — REFACTORED v2.5
+# MBUJI-MAYI BIOBANK DASHBOARD — REFACTORED v4
 # =============================================================================
 # v2.5: Enhanced data quality checks, duplicate detection, column completeness
 # =============================================================================
@@ -274,15 +274,17 @@ if (!exists("parse_study_code")) {
 
 if (!exists("parse_temp_code")) {
   parse_temp_code <- function(x) {
-    x_clean <- toupper(trimws(as.character(x)))
-    case_when(
-      grepl("OK|GOOD|BON", x_clean) ~ "OK",
-      grepl("BROKEN|CASS|ROMPU", x_clean) ~ "Broken",
-      grepl("AMB|ROOM", x_clean) ~ "Ambiante",
-      grepl("FRIG|REFR", x_clean) ~ "Frigo",
-      grepl("CONG|FREEZ", x_clean) ~ "Congelateur",
+    if (is.null(x) || length(x) == 0) return(factor(levels = c("Ambiante","Frigo","Congelateur")))
+    lab <- stringi::stri_trans_general(as.character(x), "Latin-ASCII")
+    lab <- toupper(trimws(lab))
+    res <- dplyr::case_when(
+      lab %in% c("", "NA", "N/A") ~ NA_character_,
+      grepl("^AMB|AMBIAN|ROOM", lab) ~ "Ambiante",
+      grepl("^FRIG|REFRIG", lab)     ~ "Frigo",
+      grepl("^CONG|FREEZ", lab)      ~ "Congelateur",
       TRUE ~ NA_character_
     )
+    factor(res, levels = c("Ambiante","Frigo","Congelateur"))
   }
 }
 
@@ -379,7 +381,7 @@ analyze_data_quality <- function(df_raw) {
   
   # Identify barcode and lab_id columns
   barcode_col <- grep("code.*barr|barcode", names(df_raw), ignore.case = TRUE, value = TRUE)[1]
-  labid_col <- grep("num[eé]ro|id.*lab", names(df_raw), ignore.case = TRUE, value = TRUE)[1]
+  labid_col <- grep("^(numero)$|^num[eé]ro$|id.*lab", names(df_raw), ignore.case = TRUE, value = TRUE)[1]
   
   if (is.na(barcode_col)) barcode_col <- "barcode"
   if (is.na(labid_col)) labid_col <- "lab_id"
@@ -463,95 +465,117 @@ clean_biobank_data <- function(df) {
   if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(tibble())
   
   rename_first <- function(df, new_name, pattern) {
+    if (missing(pattern) || is.null(pattern) || !nzchar(pattern)) return(df)
     hits <- grep(pattern, names(df), ignore.case = TRUE, value = TRUE)
-    if (length(hits) >= 1) df <- df %>% dplyr::rename(!!new_name := dplyr::all_of(hits[1]))
-    df
+    if (length(hits) >= 1) dplyr::rename(df, !!new_name := dplyr::all_of(hits[1])) else df
   }
   
-  df <- df %>%
-    rename_first("barcode", "code.*barr|barcode") %>%
-    rename_first("lab_id", "num[eé]ro|id.*lab") %>%
-    rename_first("date_raw", "date.*pr[eé]lev|date.*sample|^date$|date_de_prelevement") %>%
-    rename_first("age", "^age") %>%
-    rename_first("sex", "^sex|^sexe|^gender") %>%
-    rename_first("zone", "zone.*sant[eé]|health.*zone|^zs$") %>%
-    rename_first("province", "^province") %>%
-    rename_first("study", "[eé]tude|study|passif|actif") %>%
-    rename_first("structure", "structure.*sanit|facility") %>%
-    rename_first("unit", "unit[eé].*mobile|mobile.*unit") %>%
-    rename_first("date_received_raw", "date.*recept|date.*arriv") %>%
-    rename_first("date_result_raw", "date.*result|result.*date") %>%
-    rename_first("date_env_cpltha_raw", "date.*env.*cpltha|date_envoi_vers_cpltha") %>%
-    rename_first("date_rec_cpltha_raw", "date.*recept.*cpltha") %>%
-    rename_first("date_env_inrb_raw", "date.*env.*inrb") %>%
-    rename_first("date_treatment_raw", "date.*traite|date.*treatment|date.*labo") %>%
-    rename_first("temp_transport_raw", "temp.*transport") %>%
-    rename_first("temp_cpltha_raw", "temp.*stockage|temp.*cpltha") %>%
-    rename_first("ancien_cas_raw", "ancien.*cas|previous.*case|old.*case") %>%
-    rename_first("traite_raw", "trait[eé]|treated|treatment")
+  # Map EXACTLY the provided header (after janitor::clean_names):
+  # Numéro                                   -> numero
+  # Etude                                    -> etude
+  # Structure sanitaire / (mini) Unité ...   -> structure_sanitaire_mini_unite_mobile
+  # Zone de santé                            -> zone_de_sante
+  # Province                                 -> province
+  # Code-barres KPS                          -> code_barres_kps
+  # Date de prélèvement (JJ/MM/AAAA)         -> date_de_prelevement_jj_mm_aaaa
+  # Age ou année de naissance                -> age_ou_annee_de_naissance
+  # Sexe (M/F)                               -> sexe_m_f
+  # Ancien cas ...                           -> ancien_cas_oui_non_incertain
+  # Traité ...                               -> traite_oui_non_incertain
+  # Stockage avant arrivé au CPLTHA ...      -> stockage_avant_arrive_au_cpltha_ambiante_frigo_congelateur
+  # Date envoi vers CPLTHA (JJ/MM/AAAA)      -> date_envoi_vers_cpltha_jj_mm_aaaa
+  # Température lors du transport ...        -> temperature_lors_du_transport_ambiante_frigo_congelateur
+  # Date de réception (CPLTHA) (JJ/MM/AAAA)  -> date_de_reception_cpltha_jj_mm_aaaa
+  # Température de stockage au CPLTHA ...    -> temperature_de_stockage_au_cpltha_ambiante_frigo_congelateur
+  # Présence de DRS                          -> presence_de_drs_oui_non
+  # Présence de DBS                          -> presence_de_dbs_oui_non
+  # Nombre de DBS                            -> nombre_de_dbs
+  # Date d'envoi (INRB)                      -> date_d_envoi_inrb
+  # Remarques                                -> remarques
   
+  df <- df %>%
+    # CORE identifiers
+    rename_first("lab_id",  "^(numero)$|num[eé]ro") %>%
+    rename_first("barcode", "^code[_\\W]*barres[_\\W]*kps|barcode|code.*barr") %>%
+    # Demographics
+    rename_first("age",     "^age|annee[_\\W]*de[_\\W]*naissance") %>%
+    rename_first("sex",     "^sexe|^sex|gender") %>%
+    # Study/site
+    rename_first("study",   "^etude|passif|actif") %>%
+    rename_first("structure","^structure[_\\W]*sanitaire") %>%
+    rename_first("zone",    "^zone[_\\W]*de[_\\W]*sant") %>%
+    rename_first("province","^province$") %>%
+    # Dates
+    rename_first("date_raw",           "^date[_\\W]*de[_\\W]*prelev") %>%
+    rename_first("date_env_cpltha_raw","^date[_\\W]*envoi[_\\W]*vers[_\\W]*cpltha") %>%
+    rename_first("date_rec_cpltha_raw","^date[_\\W]*de[_\\W]*reception[_\\W]*cpltha") %>%
+    rename_first("date_env_inrb_raw",  "^date[_\\W]*d?[_\\W]*envoi[_\\W]*inrb|date.*inrb") %>%
+    # Temperatures
+    rename_first("temp_transport_raw", "^temperature[_\\W]*lors[_\\W]*du[_\\W]*transport") %>%
+    rename_first("temp_cpltha_raw",    "^temperature[_\\W]*de[_\\W]*stockage[_\\W]*au[_\\W]*cpltha|stockage[_\\W]*avant[_\\W]*arrive[_\\W]*au[_\\W]*cpltha") %>%
+    # Case history
+    rename_first("ancien_cas_raw",     "^ancien[_\\W]*cas") %>%
+    rename_first("traite_raw",         "^traite") %>%
+    # Optional presence fields (kept for future use)
+    rename_first("presence_drs_raw",   "^presence[_\\W]*de[_\\W]*drs") %>%
+    rename_first("presence_dbs_raw",   "^presence[_\\W]*de[_\\W]*dbs") %>%
+    rename_first("n_dbs_raw",          "^nombre[_\\W]*de[_\\W]*dbs")
+  
+  # Ensure needed columns exist
   required <- c(
     "barcode","lab_id","date_raw","age","sex","zone","province","study",
-    "structure","unit","date_received_raw","date_result_raw",
-    "date_env_cpltha_raw","date_rec_cpltha_raw","date_env_inrb_raw",
-    "date_treatment_raw","temp_transport_raw","temp_cpltha_raw",
-    "ancien_cas_raw","traite_raw"
+    "structure","date_env_cpltha_raw","date_rec_cpltha_raw","date_env_inrb_raw",
+    "temp_transport_raw","temp_cpltha_raw","ancien_cas_raw","traite_raw"
   )
   for (col in required) if (!col %in% names(df)) df[[col]] <- NA_character_
   
   df %>%
     mutate(
-      # Parse dates
+      # Dates (no treatment date anywhere)
       date_sample     = parse_any_date(date_raw),
-      date_received   = parse_any_date(date_received_raw),
-      date_result     = parse_any_date(date_result_raw),
       date_env_cpltha = parse_any_date(date_env_cpltha_raw),
       date_rec_cpltha = parse_any_date(date_rec_cpltha_raw),
       date_env_inrb   = parse_any_date(date_env_inrb_raw),
-      date_treatment  = parse_any_date(date_treatment_raw),
       
-      # Parse demographics
+      # Demographics
       age_num = parse_age(age),
       sex     = parse_sex_code(sex),
       study   = parse_study_code(study),
       
-      # Parse temperature
+      # Temperatures
       temp_field = parse_temp_code(temp_transport_raw),
       temp_hs    = parse_temp_code(temp_cpltha_raw),
       
-      # Calculate transport times
-      transport_field_hs = safe_days_between(date_env_cpltha, date_sample, 30),
-      transport_hs_lsd   = safe_days_between(date_rec_cpltha, date_env_cpltha, 30),
-      transport_lsd_inrb = safe_days_between(date_env_inrb, date_rec_cpltha, 90),
-      transport_field_cpltha = safe_days_between(date_env_cpltha, date_sample, 90),
+      # Transport legs (use your actual columns)
+      transport_sample_to_cpltha = safe_days_between(date_rec_cpltha, date_sample, 90),
+      transport_cpltha_to_inrb   = safe_days_between(date_env_inrb,   date_rec_cpltha, 90),
       
-      # Calculate conservation time with fallbacks
-      conservation_days = calc_conservation_days(
-        date_treatment, date_sample,
-        date_received, date_env_inrb,
-        max_ok = 365
-      ),
+      # “Conservation” proxy (since no treatment date): sample → (INRB send if exists, else reception CPLTHA)
+      conservation_days = {
+        end_dt <- dplyr::coalesce(date_env_inrb, date_rec_cpltha)
+        safe_days_between(end_dt, date_sample, 365)
+      },
       
-      # Determine INRB shipment status
+      # Shipment status
       shipped_to_inrb = parse_shipped_to_inrb(date_env_inrb),
       
-      # Clean text fields
+      # Tidy text
       zone      = stringr::str_squish(as.character(zone)),
       province  = stringr::str_squish(as.character(province)),
       structure = stringr::str_squish(as.character(structure)),
-      unit      = stringr::str_squish(as.character(unit)),
       
-      # Parse metadata - keep as character to preserve Unknown status
+      # Case history → keep Unknowns
       ancien_cas = as.character(parse_yes_no_uncertain(ancien_cas_raw)),
-      traite = as.character(parse_yes_no_uncertain(traite_raw))
+      traite     = as.character(parse_yes_no_uncertain(traite_raw))
     ) %>%
-    # CRITICAL: Filter for valid rows - must have BOTH barcode AND lab_id
+    # VALID rows: both identifiers present
     dplyr::filter(
-      !is.na(barcode) & nzchar(trimws(barcode)) & 
+      !is.na(barcode) & nzchar(trimws(barcode)) &
         !is.na(lab_id) & nzchar(trimws(lab_id))
     ) %>%
     dplyr::distinct(barcode, lab_id, .keep_all = TRUE)
 }
+
 
 # --- PRECOMPUTE SUMMARIES ----------------------------------------------------
 compute_kpi_summary <- memoise::memoise(function(df) {
@@ -559,17 +583,24 @@ compute_kpi_summary <- memoise::memoise(function(df) {
     n_total = nrow(df),
     n_da = sum(df$study == "DA", na.rm = TRUE),
     n_dp = sum(df$study == "DP", na.rm = TRUE),
-    n_sites = n_distinct(df$structure, na.rm = TRUE),
-    n_provinces = n_distinct(df$province, na.rm = TRUE),
-    n_zones = n_distinct(df$zone, na.rm = TRUE),
-    median_transport = median(df$transport_field_cpltha, na.rm = TRUE),
-    p95_transport = quantile(df$transport_field_cpltha, 0.95, na.rm = TRUE),
+    n_sites = dplyr::n_distinct(df$structure, na.rm = TRUE),
+    n_provinces = dplyr::n_distinct(df$province, na.rm = TRUE),
+    n_zones = dplyr::n_distinct(df$zone, na.rm = TRUE),
+    
+    # NEW: the two legs you need
+    median_sample_to_cpltha = median(df$transport_sample_to_cpltha, na.rm = TRUE),
+    p95_sample_to_cpltha    = stats::quantile(df$transport_sample_to_cpltha, 0.95, na.rm = TRUE),
+    
+    median_cpltha_to_inrb = median(df$transport_cpltha_to_inrb, na.rm = TRUE),
+    p95_cpltha_to_inrb    = stats::quantile(df$transport_cpltha_to_inrb, 0.95, na.rm = TRUE),
+    
     median_conservation = median(df$conservation_days, na.rm = TRUE),
-    pct_shipped_inrb = mean(df$shipped_to_inrb, na.rm = TRUE) * 100,
-    latest_sample = max(df$date_sample, na.rm = TRUE),
-    latest_arrival = max(df$date_rec_cpltha, na.rm = TRUE, default = NA)
+    pct_shipped_inrb = mean(!is.na(df$date_env_inrb), na.rm = TRUE) * 100,
+    
+    latest_sample = suppressWarnings(max(df$date_sample, na.rm = TRUE)),
+    latest_arrival = suppressWarnings(max(df$date_rec_cpltha, na.rm = TRUE))
   )
-}, cache = cachem::cache_mem(max_age = 600))  # 10 min cache
+}, cache = cachem::cache_mem(max_age = 600))
 
 # --- UI ---------------------------------------------------------------------
 ui <- page_navbar(
@@ -754,7 +785,7 @@ ui <- page_navbar(
     icon = bs_icon("truck"),
     # Transport KPIs
     layout_columns(
-      fill = FALSE, col_widths = c(3,3,3,3),
+      fill = FALSE, col_widths = c(3,3,3,3,3),
       value_box(
         title = "Median Transport Time",
         value = textOutput("vb_transport_median"),
@@ -768,6 +799,13 @@ ui <- page_navbar(
         showcase = bs_icon("clock-history"),
         theme = "warning",
         p("Transport time P95", style = "font-size: 12px; margin: 0;")
+      ),
+      value_box(
+        title = "Median CPLTHA → INRB",
+        value = textOutput("vb_cpltha_inrb_median"),
+        showcase = bs_icon("arrow-right"),
+        theme = "secondary",
+        p("Reception (CPLTHA) → Envoi (INRB)", style = "font-size:12px; margin:0;")
       ),
       value_box(
         title = "Median Conservation",
@@ -804,10 +842,6 @@ ui <- page_navbar(
       card(
         card_header("Temperature Status"),
         tableOutput("table_temperature")
-      ),
-      card(
-        card_header("Top Contributing Sites"),
-        tableOutput("table_top_sites")
       ),
       card(
         card_header("Transport Summary by Province"),
@@ -1212,38 +1246,31 @@ server <- function(input, output, session) {
     kpi <- kpi_summary(); scales::comma(kpi$n_zones)
   })
   
-  # Transport KPIs
+  # 1: Median Transport (Prélèvement → Réception CPLTHA)
   output$vb_transport_median <- renderText({
-    kpi <- kpi_summary()
-    if (is.finite(kpi$median_transport)) {
-      sprintf("%.1f days", kpi$median_transport)
-    } else {
-      "—"
-    }
+    k <- kpi_summary(); if (is.finite(k$median_sample_to_cpltha)) sprintf("%.1f days", k$median_sample_to_cpltha) else "—"
   })
   
+  # 2: P95 (same leg)
   output$vb_transport_p95 <- renderText({
-    kpi <- kpi_summary()
-    if (is.finite(kpi$p95_transport)) {
-      sprintf("%.1f days", kpi$p95_transport)
-    } else {
-      "—"
-    }
+    k <- kpi_summary(); if (is.finite(k$p95_sample_to_cpltha)) sprintf("%.1f days", k$p95_sample_to_cpltha) else "—"
   })
   
+  # 3: Median Conservation (unchanged)
   output$vb_conservation_median <- renderText({
-    kpi <- kpi_summary()
-    if (is.finite(kpi$median_conservation)) {
-      sprintf("%.1f days", kpi$median_conservation)
-    } else {
-      "—"
-    }
+    k <- kpi_summary(); if (is.finite(k$median_conservation)) sprintf("%.1f days", k$median_conservation) else "—"
   })
   
+  # 4: Shipped to INRB %
   output$vb_shipped_inrb <- renderText({
-    kpi <- kpi_summary()
-    sprintf("%.1f%%", kpi$pct_shipped_inrb)
+    k <- kpi_summary(); sprintf("%.1f%%", k$pct_shipped_inrb)
   })
+  
+  output$vb_cpltha_inrb_median <- renderText({
+  df <- filtered_data(); req(df, nrow(df) > 0)
+  m <- suppressWarnings(median(df$transport_cpltha_to_inrb, na.rm = TRUE))
+  if (is.finite(m)) sprintf("%.1f days", m) else "—"
+})
   
   make_demog_case_tbl_compare <- function(df_filtered, df_full) {
     if (is.null(df_full) || !nrow(df_full)) return(tibble())
@@ -1514,32 +1541,19 @@ server <- function(input, output, session) {
   })
   
   output$plot_transport_dist <- renderPlot({
-    df <- filtered_data()
-    req(df, nrow(df) > 0)
-    
-    transport_data <- df %>% filter(!is.na(transport_field_cpltha))
-    
-    if (!nrow(transport_data)) {
-      plot.new()
-      text(0.5, 0.5, "No transport data", cex = 1.2, col = "gray50")
-      return()
-    }
-    
-    med <- median(transport_data$transport_field_cpltha, na.rm = TRUE)
-    p95 <- quantile(transport_data$transport_field_cpltha, 0.95, na.rm = TRUE)
-    
-    ggplot(transport_data, aes(x = transport_field_cpltha)) +
+    df <- filtered_data(); req(df, nrow(df) > 0)
+    d <- df %>% dplyr::filter(!is.na(transport_sample_to_cpltha))
+    if (!nrow(d)) { plot.new(); text(0.5,0.5,"No transport data", cex=1.2, col="gray50"); return() }
+    med <- median(d$transport_sample_to_cpltha, na.rm = TRUE)
+    p95 <- stats::quantile(d$transport_sample_to_cpltha, 0.95, na.rm = TRUE)
+    ggplot(d, aes(x = transport_sample_to_cpltha)) +
       geom_histogram(binwidth = 1, fill = "#3498DB", color = "black", alpha = 0.7) +
       geom_vline(xintercept = med, linetype = "dashed", color = "red", linewidth = 1) +
       geom_vline(xintercept = p95, linetype = "dotted", color = "orange", linewidth = 1) +
-      labs(
-        title = "Transport Time: Sample → Shipment to CPLTHA",
-        subtitle = sprintf("Median: %.1f d | P95: %.1f d | n = %s",
-                           med, p95, scales::comma(nrow(transport_data))),
-        x = "Days", y = "Count"
-      ) +
-      theme_minimal(base_size = 13) +
-      theme(panel.grid.minor = element_blank())
+      labs(title = "Transport Time: Prélèvement → Réception (CPLTHA)",
+           subtitle = sprintf("Median: %.1f d | P95: %.1f d | n = %s", med, p95, scales::comma(nrow(d))),
+           x = "Days", y = "Count") +
+      theme_minimal(base_size = 13) + theme(panel.grid.minor = element_blank())
   })
   
   output$plot_conservation_dist <- renderPlot({
@@ -1568,35 +1582,18 @@ server <- function(input, output, session) {
       theme(panel.grid.minor = element_blank())
   })
   
-  output$table_top_sites <- renderTable({
-    df <- filtered_data(); req(df, nrow(df) > 0)
-    df %>%
-      filter(!is.na(structure)) %>%
-      count(structure, sort = TRUE) %>%
-      head(5) %>%
-      mutate(n = scales::comma(n)) %>%
-      rename(Site = structure, Samples = n)
-  }, striped = TRUE, hover = TRUE, bordered = TRUE)
-  
   output$table_temperature <- renderTable({
     df <- filtered_data(); req(df, nrow(df) > 0)
-    
-    temp_summary <- df %>%
-      mutate(
-        temp_status = case_when(
-          is.na(temp_hs) ~ "Unknown",
-          temp_hs == "Frigo" ~ "Refrigerated",
-          temp_hs == "Congelateur" ~ "Frozen",
-          temp_hs == "Ambiante" ~ "Ambient",
-          TRUE ~ "Other"
-        )
-      ) %>%
-      count(temp_status) %>%
-      mutate(Percent = sprintf("%.1f%%", n / sum(n) * 100)) %>%
-      rename(Status = temp_status, Count = n)
-    
-    temp_summary
+    df %>%
+      mutate(code = dplyr::recode(as.character(temp_hs),
+                                  "Ambiante"="A", "Frigo"="F", "Congelateur"="C",
+                                  .default = "Unknown")) %>%
+      count(code, name = "Count") %>%
+      mutate(Percent = sprintf("%.1f%%", 100 * Count / sum(Count))) %>%
+      arrange(desc(Count)) %>%
+      rename(Status = code)
   }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
   
   output$table_transport_province <- renderTable({
     df <- filtered_data(); req(df, nrow(df) > 0)
@@ -1620,25 +1617,25 @@ server <- function(input, output, session) {
   
   output$table_shipment_status <- renderDT({
     df <- filtered_data(); req(df, nrow(df) > 0)
-    
     df %>%
-      filter(!is.na(structure)) %>%
+      dplyr::filter(!is.na(structure)) %>%
       group_by(structure) %>%
       summarise(
-        Total = n(),
-        Shipped = sum(shipped_to_inrb, na.rm = TRUE),
-        `% Shipped` = sprintf("%.1f%%", mean(shipped_to_inrb, na.rm = TRUE) * 100),
-        `Median Transport (d)` = sprintf("%.1f", median(transport_field_cpltha, na.rm = TRUE)),
-        `Outliers (>P95)` = sum(transport_field_cpltha > 
-                                  quantile(df$transport_field_cpltha, 0.95, na.rm = TRUE), 
-                                na.rm = TRUE),
+        Total = dplyr::n(),
+        Shipped = sum(!is.na(date_env_inrb)),
+        `% Shipped` = sprintf("%.1f%%", 100 * mean(!is.na(date_env_inrb))),
+        `Median CPLTHA→INRB (d)` = {
+          v <- transport_cpltha_to_inrb
+          if (all(is.na(v))) "—" else sprintf("%.1f", median(v, na.rm = TRUE))
+        },
+        `P95 CPLTHA→INRB (d)` = {
+          v <- transport_cpltha_to_inrb
+          if (all(is.na(v))) "—" else sprintf("%.1f", stats::quantile(v, 0.95, na.rm = TRUE))
+        },
         .groups = "drop"
       ) %>%
       arrange(desc(Total)) %>%
-      datatable(
-        options = list(pageLength = 10, scrollX = TRUE),
-        filter = "top", rownames = FALSE
-      )
+      datatable(options = list(pageLength = 10, scrollX = TRUE), filter = "top", rownames = FALSE)
   })
   
   # === MODULES =============================================================
@@ -1801,6 +1798,3 @@ server <- function(input, output, session) {
 
 # --- RUN --------------------------------------------------------------------
 shinyApp(ui, server)
-
-
-#install.packages(c("bsicons","bslib"))
